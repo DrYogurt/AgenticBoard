@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgenticBoard — Dr. Yogurt's Zen Terminal</title>
+  <meta name="description" content="Personalized terminal home page for Dr. Yogurt.">
+
+  <!-- Google Fonts: Monospace Zen Code Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600;700&family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap"
+    rel="stylesheet">
+
+  <!-- Favicons for Light and Dark Modes -->
+  <link rel="icon" type="image/png" href="favicon-light.png" media="(prefers-color-scheme: light)">
+  <link rel="icon" type="image/png" href="favicon-dark.png" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="favicon-dark.png">
+
+  <link rel="stylesheet" href="styles.css">
+</head>
+
+<body>
+  <div id="app" class="app-container">
+
+    <!-- 1. Zen Minimalist Header (Fixed at Top) -->
+    <header class="app-header">
+      <!-- Minimalist Project Selector (Left) -->
+      <div class="header-project-nav">
+        <!-- Up Arrow Button to Return to Login View (Visible in expanded mode) -->
+        <button id="btn-collapse-board" class="nav-arrow-btn hidden" title="Return to Login / Clock View">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polyline points="18 15 12 9 6 15"></polyline>
+          </svg>
+        </button>
+
+        <button id="btn-project-reset" class="nav-circle-btn" title="All Projects">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <circle cx="12" cy="12" r="9" />
+          </svg>
+        </button>
+
+        <span id="current-project-title" class="project-title-display">all projects</span>
+
+        <button id="btn-project-next" class="nav-arrow-btn" title="Next Project">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
+          </svg>
+        </button>
+
+        <div class="live-status-dot" id="live-status" title="Live Stream Active">
+          <span class="status-dot"></span>
+        </div>
+      </div>
+
+      <!-- Center Header Greeting Text (Only in expanded mode) -->
+      <div class="header-center-greeting">
+        <span id="header-greeting-text" class="header-greeting-text hidden"></span>
+      </div>
+
+      <!-- Hidden search input for / shortcut -->
+      <div class="search-overlay hidden" id="search-overlay">
+        <input type="text" id="search-input" placeholder="search tasks... (Esc to close)" />
+      </div>
+
+      <!-- Hidden select for compatibility -->
+      <select id="project-filter-select" class="hidden">
+        <option value="">All Projects</option>
+      </select>
+
+      <!-- Hamburger Menu Right -->
+      <div class="header-hamburger-menu">
+        <button id="btn-hamburger" class="hamburger-btn" title="Menu">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        </button>
+
+        <!-- Dropdown Menu -->
+        <div id="hamburger-dropdown" class="dropdown-menu hidden">
+          <button id="menu-hero" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <polyline points="12 6 12 12 16 14" />
+            </svg>
+            Home / Clock View
+          </button>
+          <button id="menu-search" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+            Search Tasks <span class="shortcut">/</span>
+          </button>
+          <button id="btn-projects" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+            Projects
+          </button>
+          <button id="btn-extensions" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+            Extensions
+          </button>
+          <button id="btn-add-column" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            Add Column
+          </button>
+          <button id="btn-toggle-preview" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+            </svg>
+            Workflow Preview
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- 2. Hero Landing Section (Spacious Login View) -->
+    <section id="hero-section" class="hero-section">
+      <div class="hero-content">
+        <!-- Large Multi-Line Cheeky Greeting Message -->
+        <h1 id="hero-greeting" class="hero-greeting">
+          Welcome back, Dr. Yogurt!<br>
+          Ready to achieve greatness?
+        </h1>
+
+        <!-- Minimalist Analogue Clock (Circle + Hour & Minute Hands, No Dial Markings) -->
+        <div id="hero-clock" class="hero-clock-container">
+          <svg id="analogue-clock" width="130" height="130" viewBox="0 0 100 100">
+            <!-- Dial Circle -->
+            <circle cx="50" cy="50" r="45" fill="rgba(17, 17, 27, 0.4)" stroke="rgba(203, 166, 247, 0.35)"
+              stroke-width="2.5" />
+            <!-- Hour Hand -->
+            <line id="clock-hour-hand" x1="50" y1="50" x2="50" y2="26" stroke="#cba6f7" stroke-width="3.5"
+              stroke-linecap="round" />
+            <!-- Minute Hand -->
+            <line id="clock-minute-hand" x1="50" y1="50" x2="50" y2="15" stroke="#89dceb" stroke-width="2.5"
+              stroke-linecap="round" />
+            <!-- Center Pin -->
+            <circle cx="50" cy="50" r="3.5" fill="#cba6f7" />
+          </svg>
+        </div>
+
+        <div class="hero-meta">
+          <span id="hero-workload-badge" class="workload-badge">0 in todo • 0 in progress</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. Kanban Board Section -->
+    <section id="board-section" class="board-section">
+      <!-- Kanban Board Canvas (Scaled to Middle 60%) -->
+      <main id="kanban-canvas" class="kanban-canvas">
+        <!-- Dynamic columns inserted by app.js -->
+      </main>
+    </section>
+
+    <!-- 4. Floating Action Button -->
+    <button id="fab-add-task" class="fab-btn hidden" title="Create New Task">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <line x1="12" y1="5" x2="12" y2="19" />
+        <line x1="5" y1="12" x2="19" y2="12" />
+      </svg>
+    </button>
+
+    <!-- 5. Footer Meta Bar -->
+    <footer class="app-footer">
+      <div class="footer-left">
+        <span id="task-counter" class="meta-item">0 tasks</span>
+        <span class="meta-divider">•</span>
+        <span id="project-counter" class="meta-item">0 projects</span>
+        <span class="meta-divider">•</span>
+        <span id="extension-counter" class="meta-item">0 extensions</span>
+      </div>
+      <div class="footer-right">
+        <span class="keyboard-tip"><kbd>N</kbd> task</span>
+        <span class="keyboard-tip"><kbd>/</kbd> search</span>
+        <span class="keyboard-tip"><kbd>Esc</kbd> close</span>
+      </div>
+    </footer>
+
+    <!-- Hidden compatibility button -->
+    <button id="btn-new-task" class="hidden"></button>
+
+    <!-- Modal 1: Task Editor -->
+    <div id="modal-task" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="task-modal-title">task details</h3>
+          <button class="modal-close" data-close="modal-task">&times;</button>
+        </div>
+        <form id="form-task" class="modal-body">
+          <input type="hidden" id="task-id-input" />
+
+          <div class="form-group">
+            <label for="task-title-input">name <span class="required">*</span></label>
+            <input type="text" id="task-title-input" class="form-input" placeholder="e.g. refactor authentication layer"
+              required />
+          </div>
+
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label for="task-project-input">project <span class="required">*</span></label>
+              <select id="task-project-input" class="form-input" required></select>
+            </div>
+
+            <div class="form-group flex-1">
+              <label for="task-adw-input">workflow / ADW <span class="required">*</span></label>
+              <select id="task-adw-input" class="form-input" required></select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="task-status-input">initial status / column</label>
+            <select id="task-status-input" class="form-input"></select>
+          </div>
+
+          <div class="form-group">
+            <label for="task-desc-input">description</label>
+            <textarea id="task-desc-input" class="form-input textarea" rows="4"
+              placeholder="add implementation notes, specifications, or code snippets..."></textarea>
+          </div>
+
+          <div class="form-group hidden" id="task-workflow-section">
+            <div class="workflow-header-row">
+              <label>workflow run</label>
+              <div class="workflow-actions">
+                <button type="button" id="btn-start-task" class="btn btn-secondary btn-run">▶ start</button>
+                <button type="button" id="btn-stop-task" class="btn btn-danger btn-run hidden">■ stop</button>
+              </div>
+            </div>
+            <div id="task-trace-panel" class="trace-panel">
+              <div class="trace-empty">not started yet</div>
+            </div>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" id="btn-delete-task" class="btn btn-danger hidden">delete</button>
+            <div class="flex-spacer"></div>
+            <button type="button" class="btn btn-secondary" data-close="modal-task">cancel</button>
+            <button type="submit" class="btn btn-primary">save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal 2: Column Editor -->
+    <div id="modal-column" class="modal-backdrop hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3 id="column-modal-title">add column</h3>
+          <button class="modal-close" data-close="modal-column">&times;</button>
+        </div>
+        <form id="form-column" class="modal-body">
+          <input type="hidden" id="column-edit-id" />
+          <div class="form-group">
+            <label for="column-id-input">column id <span class="required">*</span></label>
+            <input type="text" id="column-id-input" class="form-input" placeholder="e.g. testing" required />
+          </div>
+          <div class="form-group">
+            <label for="column-name-input">display name <span class="required">*</span></label>
+            <input type="text" id="column-name-input" class="form-input" placeholder="e.g. Testing & QA" required />
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-close="modal-column">cancel</button>
+            <button type="submit" class="btn btn-primary">save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Modal 3: Projects Browser -->
+    <div id="modal-projects" class="modal-backdrop hidden">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h3>projects</h3>
+          <button class="modal-close" data-close="modal-projects">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="projects-list" id="projects-container"></div>
+
+          <hr class="modal-divider" />
+
+          <h4>register project</h4>
+          <form id="form-project" class="form-row mt-3">
+            <input type="text" id="project-name-field" class="form-input flex-1" placeholder="name (e.g. daily-todos)"
+              required />
+            <input type="text" id="project-id-field" class="form-input flex-1" placeholder="prefix (e.g. todo)"
+              required />
+            <input type="text" id="project-path-field" class="form-input flex-2" placeholder="directory path"
+              required />
+            <button type="submit" class="btn btn-primary">register</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal 4: Extensions Drawer -->
+    <div id="modal-extensions" class="modal-backdrop hidden">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h3>extensions</h3>
+          <button class="modal-close" data-close="modal-extensions">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="extensions-list" id="extensions-container"></div>
+
+          <hr class="modal-divider" />
+
+          <h4>register extension</h4>
+          <form id="form-extension" class="form-row mt-3">
+            <input type="text" id="ext-id-field" class="form-input flex-1" placeholder="id" required />
+            <input type="text" id="ext-type-field" class="form-input flex-1" placeholder="type" required />
+            <input type="url" id="ext-url-field" class="form-input flex-2" placeholder="https://..." required />
+            <button type="submit" class="btn btn-primary">register</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Workflow Preview Drawer (hamburger toggle) -->
+    <div id="workflow-preview-panel" class="preview-drawer hidden">
+      <div class="preview-drawer-header">
+        <h3>active workflows</h3>
+        <button class="modal-close" id="btn-close-preview">&times;</button>
+      </div>
+      <div id="preview-drawer-body" class="preview-drawer-body">
+        <div class="trace-empty">no active workflows</div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="app.js"></script>
+</body>
+
+</html>

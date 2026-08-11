@@ -1,0 +1,17 @@
+{
+  "name": "@agentic-board/website",
+  "version": "0.1.0",
+  "description": "AgenticBoard — Web UI frontend client",
+  "private": true,
+  "scripts": {
+    "dev": "npx http-server public -p 8080 -c-1",
+    "start": "npx http-server public -p 8080 -c-1",
+    "build": "echo 'No build step required for static website'"
+  },
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  },
+  "keywords": ["kanban", "web", "frontend"],
+  "author": "",
+  "license": "MIT"
+}

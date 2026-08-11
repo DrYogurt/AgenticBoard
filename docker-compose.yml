@@ -1,0 +1,31 @@
+# The board server runs on the HOST, not in a container: it shells out to
+# `uv`/`pi`/`git` and reads/writes project directories on your filesystem to
+# execute ADWs, none of which a container has access to. Only the website
+# (a static UI + nginx reverse proxy) is dockerized here — it reaches the
+# host's server via `host.docker.internal`. See TUTORIAL.md.
+
+services:
+  website:
+    build:
+      context: ./website
+      dockerfile: Dockerfile
+    container_name: agentic_board_website
+    ports:
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  tui:
+    build:
+      context: ./tui
+      dockerfile: Dockerfile
+    container_name: agentic_board_tui
+    stdin_open: true
+    tty: true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - FACTORY_SERVER_URL=http://host.docker.internal:3000
+    profiles:
+      - tui

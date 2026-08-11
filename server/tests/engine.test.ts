@@ -1,0 +1,284 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { DeterministicEngine } from '../core/engine';
+import { WorkspaceStorage } from '../core/storage';
+
+describe('DeterministicEngine Integration', () => {
+  let tmpDir: string;
+  let engine: DeterministicEngine;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentic-board-test-'));
+    WorkspaceStorage.initWorkspace(tmpDir);
+    engine = new DeterministicEngine(tmpDir);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('initializes workspace and reads empty board state without emitting events', async () => {
+    let eventEmitted = false;
+    engine.on('event', () => { eventEmitted = true; });
+
+    const res = await engine.executeCommand({ type: 'get_board', payload: {} });
+    expect(res.success).toBe(true);
+    expect(res.data.board.title).toBe('Software Factory Board');
+    expect(res.data.board.columns.length).toBe(3);
+    expect(eventEmitted).toBe(false);
+  });
+
+  it('creates, moves, updates, and deletes tasks deterministically with ADW abstraction', async () => {
+    // 1. Create task
+    const createRes = await engine.executeCommand({
+      type: 'create_task',
+      payload: {
+        name: 'Implement Auth',
+        description: 'Add OAuth2 login',
+        project: 'tasks',
+        adw: 'implement-feature',
+        status: 'todo'
+      }
+    });
+    expect(createRes.success).toBe(true);
+    expect(createRes.data.id).toBe('tasks-001');
+    expect(createRes.data.name).toBe('Implement Auth');
+    expect(createRes.data.adw).toBe('implement-feature');
+    expect(createRes.data.agent).toBeUndefined();
+
+    // 2. Verify task file written to disk
+    const taskPath = path.join(tmpDir, 'tasks', 'tasks-001.json');
+    expect(fs.existsSync(taskPath)).toBe(true);
+
+    // 3. Move task
+    const moveRes = await engine.executeCommand({
+      type: 'move_task',
+      payload: { id: 'tasks-001', target_status: 'in-progress' }
+    });
+    expect(moveRes.success).toBe(true);
+    expect(moveRes.data.status).toBe('in-progress');
+
+    // 4. Check board state task_order
+    const boardRes = await engine.executeCommand({ type: 'get_board', payload: {} });
+    expect(boardRes.data.board.task_order['in-progress']).toContain('tasks-001');
+    expect(boardRes.data.board.task_order['todo']).not.toContain('tasks-001');
+
+    // 5. Update task
+    const updateRes = await engine.executeCommand({
+      type: 'update_task',
+      payload: { id: 'tasks-001', name: 'Implement OAuth2 Auth' }
+    });
+    expect(updateRes.success).toBe(true);
+    expect(updateRes.data.name).toBe('Implement OAuth2 Auth');
+
+    // 6. Delete task
+    const deleteRes = await engine.executeCommand({
+      type: 'delete_task',
+      payload: { id: 'tasks-001' }
+    });
+    expect(deleteRes.success).toBe(true);
+    expect(fs.existsSync(taskPath)).toBe(false);
+  });
+
+  it('rejects task creation when selecting invalid project or undeclared ADW', async () => {
+    // Nonexistent project
+    const invalidProjRes = await engine.executeCommand({
+      type: 'create_task',
+      payload: { name: 'Invalid Task', project: 'nonexistent', adw: 'implement-feature' }
+    });
+    expect(invalidProjRes.success).toBe(false);
+    expect(invalidProjRes.error).toContain("Project 'nonexistent' not found");
+
+    // Undeclared ADW for valid project
+    const invalidAdwRes = await engine.executeCommand({
+      type: 'create_task',
+      payload: { name: 'Invalid ADW Task', project: 'tasks', adw: 'unsupported-adw' }
+    });
+    expect(invalidAdwRes.success).toBe(false);
+    expect(invalidAdwRes.error).toContain("ADW 'unsupported-adw' is not declared");
+  });
+
+  it('handles concurrent task creations without duplicate IDs', async () => {
+    const promises = Array.from({ length: 5 }, (_, i) =>
+      engine.executeCommand({
+        type: 'create_task',
+        payload: { name: `Concurrent Task ${i}`, project: 'tasks', adw: 'implement-feature' }
+      })
+    );
+
+    const results = await Promise.all(promises);
+    results.forEach((res) => expect(res.success).toBe(true));
+
+    const ids = results.map((res) => res.data.id);
+    const uniqueIds = new Set(ids);
+    expect(uniqueIds.size).toBe(5);
+  });
+
+  it('prevents column deletion when tasks belong to that column', async () => {
+    await engine.executeCommand({
+      type: 'create_task',
+      payload: { name: 'Active Task', status: 'todo', project: 'tasks', adw: 'implement-feature' }
+    });
+
+    const delColRes = await engine.executeCommand({
+      type: 'delete_column',
+      payload: { id: 'todo' }
+    });
+    expect(delColRes.success).toBe(false);
+    expect(delColRes.error).toContain("Cannot delete column 'todo'");
+  });
+
+  it('manages projects and lists project ADWs', async () => {
+    const projRes = await engine.executeCommand({
+      type: 'create_project',
+      payload: {
+        id: 'web-app',
+        name: 'Web Application',
+        path: '/home/user/web-app',
+        adws: [{ id: 'custom-flow', path: './workflows/custom-flow' }]
+      }
+    });
+    expect(projRes.success).toBe(true);
+
+    const adwsRes = await engine.executeCommand({
+      type: 'list_project_adws',
+      payload: { id: 'web-app' }
+    });
+    expect(adwsRes.success).toBe(true);
+    expect(adwsRes.data.length).toBe(1);
+    expect(adwsRes.data[0].id).toBe('custom-flow');
+  });
+  it('fails safely when workspace lock cannot be acquired', async () => {
+    // Mock proper-lockfile to always throw
+    const lockfile = require('proper-lockfile');
+    const originalLock = lockfile.lock;
+    lockfile.lock = () => Promise.reject(new Error('Lock acquisition failed'));
+
+    try {
+      const res = await engine.executeCommand({
+        type: 'create_task',
+        payload: { name: 'Locked Task', project: 'tasks', adw: 'implement-feature' }
+      });
+      expect(res.success).toBe(false);
+      expect(res.error).toContain('Lock acquisition failed');
+    } finally {
+      lockfile.lock = originalLock;
+    }
+  });
+
+  it('preserves task edits when moving simultaneously', async () => {
+    const taskRes = await engine.executeCommand({
+      type: 'create_task',
+      payload: { name: 'Old Name', project: 'tasks', adw: 'implement-feature', status: 'todo' }
+    });
+    const taskId = taskRes.data.id;
+
+    const updateRes = await engine.executeCommand({
+      type: 'update_task',
+      payload: { id: taskId, name: 'New Name', status: 'in-progress' }
+    });
+    expect(updateRes.success).toBe(true);
+    expect(updateRes.data.name).toBe('New Name');
+    expect(updateRes.data.status).toBe('in-progress');
+
+    // Verify it stuck to disk
+    const diskTask = await engine.executeCommand({ type: 'get_task', payload: { id: taskId } });
+    expect(diskTask.data.name).toBe('New Name');
+  });
+
+  it('rejects project updates that remove an in-use ADW', async () => {
+    // 1. Create a project with two ADWs
+    await engine.executeCommand({
+      type: 'create_project',
+      payload: { id: 'multi-adw-proj', path: '.', adws: [{ id: 'adw-1', path: '.' }, { id: 'adw-2', path: '.' }] }
+    });
+
+    // 2. Create task using adw-2
+    await engine.executeCommand({
+      type: 'create_task',
+      payload: { name: 'Test Task', project: 'multi-adw-proj', adw: 'adw-2' }
+    });
+
+    // 3. Try to update project to remove adw-2
+    const res = await engine.executeCommand({
+      type: 'update_project',
+      payload: { id: 'multi-adw-proj', adws: [{ id: 'adw-1', path: '.' }] }
+    });
+    
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('selects ADW \'adw-2\' which is not declared');
+
+    // 4. Verify disk restoration: projects.json should still declare adw-2 on disk
+    const proj = (await engine.executeCommand({ type: 'get_project', payload: { id: 'multi-adw-proj' } })).data;
+    expect(proj.adws.some((a: any) => a.id === 'adw-2')).toBe(true);
+  });
+
+  it('consolidates legacy data directories and stranded tasks into active workspace', async () => {
+    const legacyDir = path.join(tmpDir, 'core', 'data');
+    const legacyTasksDir = path.join(legacyDir, 'tasks');
+    fs.mkdirSync(legacyTasksDir, { recursive: true });
+
+    const strandedTask = {
+      id: 'tasks-002',
+      title: 'Stranded Legacy Task',
+      status: 'todo',
+      project: 'tasks',
+      adw: 'implement-feature'
+    };
+    fs.writeFileSync(path.join(legacyTasksDir, 'tasks-002.json'), JSON.stringify(strandedTask, null, 2), 'utf8');
+
+    // Re-instantiate storage to trigger migration
+    const storage = new WorkspaceStorage(tmpDir);
+    expect(storage.needsMigration()).toBe(false);
+
+    const migratedTaskPath = path.join(tmpDir, 'tasks', 'tasks-002.json');
+    expect(fs.existsSync(migratedTaskPath)).toBe(true);
+    expect(fs.existsSync(legacyDir)).toBe(false);
+
+    const taskObj = await storage.readTask('tasks-002');
+    expect(taskObj?.name).toBe('Stranded Legacy Task');
+  });
+
+  it('does not create backups when no migration is necessary', async () => {
+    const backupsDir = path.join(tmpDir, '.backups');
+    const initialBackups = fs.existsSync(backupsDir) ? fs.readdirSync(backupsDir) : [];
+
+    // Re-instantiate WorkspaceStorage on clean workspace
+    new WorkspaceStorage(tmpDir);
+
+    const finalBackups = fs.existsSync(backupsDir) ? fs.readdirSync(backupsDir) : [];
+    expect(finalBackups.length).toBe(initialBackups.length);
+  });
+
+  it('rolls back disk changes if validation fails mid-mutation', async () => {
+    const initialBoard = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+
+    // We'll intentionally pass a status that is not a column, but we will bypass 
+    // the early check to force a failure during validation.
+    // Wait, the early check handles this. Let's force an error by mocking `validateStateInvariants`.
+    const originalValidate = engine['validateStateInvariants'];
+    engine['validateStateInvariants'] = () => Promise.reject(new Error('Simulated validation failure'));
+
+    try {
+      const res = await engine.executeCommand({
+        type: 'create_task',
+        payload: { name: 'Rollback Task', project: 'tasks', adw: 'implement-feature' }
+      });
+      expect(res.success).toBe(false);
+      expect(res.error).toContain('Simulated validation failure');
+
+      // The task file should not exist, and the board should not have been updated
+      const finalBoard = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(finalBoard.revision).toBe(initialBoard.revision);
+      
+      const tasks = fs.readdirSync(path.join(tmpDir, 'tasks'));
+      expect(tasks.length).toBe(0);
+    } finally {
+      engine['validateStateInvariants'] = originalValidate;
+    }
+  });
+});

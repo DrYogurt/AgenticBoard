@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment files
+.env
+.env.local
+*.env.local
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+
+# Claude Code local (per-machine) settings — not shared project config
+.claude/settings.local.json
+
+# Board server workspace-instance data — regenerated at runtime, never source.
+# See TUTORIAL.md: run the server with WORKSPACE_DIR pointed outside the repo.
+/server/board.json
+/server/projects.json
+/server/agents.json
+/server/extensions.json
+/server/tasks/
+/server/projects/
+/server/schemas/
+/server/.workspace.lock
+/server/.backups/
+/server/.runs/
+
+# Vendored external reference clone — has its own git history/remote, not
+# meant to be nested into this repo's history. Copy from it, don't commit it.
+/super-simple-software-factory/
