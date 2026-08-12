@@ -145,9 +145,9 @@ export class SchemaValidator {
         errors.push(`Task '${t.id}' references nonexistent project '${t.project}'.`);
         continue;
       }
-      if (!t.adw) {
-        errors.push(`Task '${t.id}' has no ADW specified.`);
-      } else {
+      // adw is optional — a task with none is a plain, non-agentic checklist
+      // item. If one IS set, it must still belong to the task's project.
+      if (t.adw) {
         const projectAdws = proj.adws || [];
         if (!projectAdws.some((a) => a.id === t.adw)) {
           errors.push(`Task '${t.id}' selects ADW '${t.adw}' which is not declared by project '${t.project}'.`);

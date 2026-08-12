@@ -11,7 +11,9 @@ export interface Task {
   title?: string;
   status: TaskStatus;
   project: string;
-  adw: string;
+  /** Optional: a task with no ADW is a plain, non-agentic checklist item —
+   *  there's nothing for start_task to run. */
+  adw?: string;
   description?: string;
   created_at?: string;
   updated_at?: string;
@@ -78,6 +80,7 @@ export type CommandType =
   | 'list_project_adws'
   | 'start_task'
   | 'stop_task'
+  | 'sync_sssf'
   | 'register_extension'
   | 'remove_extension'
   | 'list_extensions'

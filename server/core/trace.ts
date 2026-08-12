@@ -50,6 +50,10 @@ export interface TraceAgentSession {
   coding_agent: string | null;
   model: string | null;
   session_id: string | null;
+  /** Absolute path SSSF passes as `pi --session-dir` — required alongside
+   *  `--session-id` to resume, since pi stores sessions there rather than
+   *  in its own default location. See agents.py: `(agent_dir / "pi_sessions")`. */
+  session_dir: string | null;
   color: string | null;
   context_tokens: number | null;
   context_window: number | null;
@@ -89,6 +93,48 @@ export interface TraceEventsPage {
   has_more: boolean;
 }
 
+export interface TraceEnvelope {
+  envelope_id: string;
+  adw_id: string;
+  phase_id: string | null;
+  agent: string | null;
+  output_type: string | null;
+  payload_json: string | null;
+  valid: number | null;
+  attempt: number | null;
+  created_at: string | null;
+}
+
+export interface TraceGateResult {
+  id: number;
+  adw_id: string;
+  phase_id: string | null;
+  attempt: number | null;
+  gate: string | null;
+  passed: number | null;
+  violations_json: string | null;
+  checks_json: string | null;
+  created_at: string | null;
+}
+
+export interface TraceAgentPrompts {
+  system: string | null;
+  user: string | null;
+}
+
+/** A row from SSSF's `processes` table: one per ADW-script process (kind='adw')
+ *  or per individual `pi` agent invocation within it (kind='agent'). */
+export interface TraceProcess {
+  id: number;
+  adw_id: string;
+  kind: 'adw' | 'agent' | null;
+  name: string | null;
+  pid: number;
+  command: string | null;
+  started_at: string | null;
+  ended_at: string | null;
+}
+
 const MAX_LIMIT = 1000;
 const DEFAULT_LIMIT = 500;
 
@@ -99,11 +145,14 @@ function clamp(value: number, min: number, max: number): number {
 
 export class TraceDb {
   readonly dbPath: string;
+  /** Where SSSF's ADW session dirs live: {data_dir}/sessions/{adw_id}/{agent}/. */
+  readonly sessionsDir: string;
   private readonly db: InstanceType<typeof DatabaseSync>;
   private readonly columnCache = new Map<string, boolean>();
 
   constructor(dbPath: string) {
     this.dbPath = dbPath;
+    this.sessionsDir = path.resolve(path.dirname(dbPath), 'sessions');
     this.db = new DatabaseSync(dbPath, { readOnly: true });
     this.db.exec('PRAGMA busy_timeout = 5000');
   }
@@ -160,6 +209,9 @@ export class TraceDb {
            FROM agent_sessions WHERE adw_id = ? ORDER BY created_at, agent`
       )
       .all(adwId) as TraceAgentSession[];
+    for (const row of completed) {
+      row.session_dir = this.piSessionDir(adwId, row.agent);
+    }
     results.push(...completed);
 
     const started = this.db
@@ -186,6 +238,7 @@ export class TraceDb {
         coding_agent: null,
         model: payload.model ?? null,
         session_id: payload.session_id ?? null,
+        session_dir: this.piSessionDir(adwId, row.agent),
         color: payload.color ?? null,
         context_tokens: null,
         context_window: null,
@@ -194,6 +247,13 @@ export class TraceDb {
       });
     }
     return results;
+  }
+
+  /** Where `pi --session-dir` must point to resume this agent's session:
+   *  `{sessionsDir}/{adw_id}/{agent}/pi_sessions` (agents.py:
+   *  `session_dir=str((agent_dir / "pi_sessions").resolve())`). */
+  private piSessionDir(adwId: string, agent: string): string {
+    return path.join(this.sessionsDir, adwId, agent, 'pi_sessions');
   }
 
   usage(adwId: string): TraceUsage {
@@ -246,6 +306,84 @@ export class TraceDb {
       cursor: events.length > 0 ? events[events.length - 1]!.rowid : Math.max(0, after),
       has_more: events.length === cappedLimit
     };
+  }
+
+  envelopes(adwId: string): TraceEnvelope[] {
+    return this.db
+      .prepare(
+        `SELECT envelope_id, adw_id, phase_id, agent, output_type, payload_json,
+                valid, attempt, created_at
+           FROM envelopes WHERE adw_id = ? ORDER BY created_at, rowid`
+      )
+      .all(adwId) as TraceEnvelope[];
+  }
+
+  gates(adwId: string): TraceGateResult[] {
+    const checks = this.optionalColumn('gate_results', 'checks_json');
+    return this.db
+      .prepare(
+        `SELECT id, adw_id, phase_id, attempt, gate, passed, violations_json,
+                ${checks}, created_at
+           FROM gate_results WHERE adw_id = ? ORDER BY id`
+      )
+      .all(adwId) as TraceGateResult[];
+  }
+
+  /**
+   * The exact compiled prompts sent to an agent, read from
+   * {sessionsDir}/{adw_id}/{agent}/prompts/{system,user}.md. Files are the raw
+   * record — the db has no copy. Either field is null when that file isn't on
+   * disk (the agent never ran in this session), which is a normal state.
+   */
+  prompts(adwId: string, agent: string): TraceAgentPrompts {
+    const dir = path.resolve(this.sessionsDir, adwId, agent, 'prompts');
+    if (dir !== this.sessionsDir && !dir.startsWith(this.sessionsDir + path.sep)) {
+      return { system: null, user: null };
+    }
+    const read = (name: string): string | null => {
+      const file = path.join(dir, `${name}.md`);
+      return fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+    };
+    return { system: read('system'), user: read('user') };
+  }
+
+  /**
+   * Every session in this project's db, most recent first — no `adw_id` filter,
+   * mirrors SSSF's own visualizer (`apps/visualizer/server/db.ts`'s `sessions()`).
+   * Used to discover runs the board doesn't know about yet (started directly via
+   * SSSF, bypassing the board entirely) rather than looking up one known id.
+   */
+  sessions(limit = DEFAULT_LIMIT): TraceSession[] {
+    const cappedLimit = clamp(limit, 1, MAX_LIMIT);
+    const whereArchived = this.hasColumn('sessions', 'archived') ? 'WHERE COALESCE(archived, 0) = 0' : '';
+    return this.db
+      .prepare(
+        `SELECT adw_id, ${this.optionalColumn('sessions', 'adw_name')}, request,
+                status, engineer, started_at, ended_at, total_tokens, total_cost
+           FROM sessions ${whereArchived}
+           ORDER BY started_at DESC, rowid DESC
+           LIMIT ?`
+      )
+      .all(cappedLimit) as TraceSession[];
+  }
+
+  /**
+   * Every currently-live process across ALL sessions in this project's db
+   * (`ended_at IS NULL`) — `adw_id` is just a row column here, not a filter, so
+   * this surfaces agents regardless of whether their session is already known
+   * to the caller. "Live" is best-effort: a hard-killed process (SIGKILL, crash,
+   * power loss) leaves `ended_at IS NULL` forever — see `processes` table
+   * comment in SSSF's tracer.py ("NULL = believed alive").
+   */
+  liveProcesses(kind?: 'adw' | 'agent'): TraceProcess[] {
+    if (!this.tableExists('processes')) return [];
+    const kindFilter = kind ? 'AND kind = ?' : '';
+    const stmt = this.db.prepare(
+      `SELECT id, adw_id, kind, name, pid, command, started_at, ended_at
+         FROM processes WHERE ended_at IS NULL ${kindFilter}
+         ORDER BY started_at`
+    );
+    return (kind ? stmt.all(kind) : stmt.all()) as TraceProcess[];
   }
 
   /** Live-tracked pids from SSSF's own `processes` table (adw_id -> pid, ended_at IS NULL). */

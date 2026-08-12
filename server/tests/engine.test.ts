@@ -5,6 +5,37 @@ import os from 'os';
 import { DeterministicEngine } from '../core/engine';
 import { WorkspaceStorage } from '../core/storage';
 
+const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
+
+function seedSssfDb(
+  projectPath: string,
+  sessions: Array<{ adw_id: string; adw_name?: string; request?: string; status: string; started_at?: string }>
+): string {
+  const dbDir = path.join(projectPath, 'adws', 'adw_data');
+  fs.mkdirSync(dbDir, { recursive: true });
+  const dbPath = path.join(dbDir, 'sssf.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`CREATE TABLE IF NOT EXISTS sessions (
+    adw_id TEXT PRIMARY KEY, adw_name TEXT, request TEXT, status TEXT,
+    engineer TEXT, started_at TEXT, ended_at TEXT, total_tokens INTEGER, total_cost REAL
+  )`);
+  const insert = db.prepare(
+    `INSERT OR REPLACE INTO sessions (adw_id, adw_name, request, status, engineer, started_at, ended_at, total_tokens, total_cost)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  for (const s of sessions) {
+    insert.run(s.adw_id, s.adw_name ?? null, s.request ?? null, s.status, null, s.started_at ?? new Date().toISOString(), null, 0, 0);
+  }
+  db.close();
+  return dbPath;
+}
+
+function updateSessionStatus(dbPath: string, adwId: string, status: string): void {
+  const db = new DatabaseSync(dbPath);
+  db.prepare(`UPDATE sessions SET status = ? WHERE adw_id = ?`).run(status, adwId);
+  db.close();
+}
+
 describe('DeterministicEngine Integration', () => {
   let tmpDir: string;
   let engine: DeterministicEngine;
@@ -28,7 +59,10 @@ describe('DeterministicEngine Integration', () => {
     const res = await engine.executeCommand({ type: 'get_board', payload: {} });
     expect(res.success).toBe(true);
     expect(res.data.board.title).toBe('Software Factory Board');
-    expect(res.data.board.columns.length).toBe(3);
+    expect(res.data.board.columns.length).toBe(5);
+    expect(res.data.board.columns.map((c: any) => c.id)).toEqual([
+      'failed', 'todo', 'in-progress', 'ready-for-review', 'done'
+    ]);
     expect(eventEmitted).toBe(false);
   });
 
@@ -280,5 +314,137 @@ describe('DeterministicEngine Integration', () => {
     } finally {
       engine['validateStateInvariants'] = originalValidate;
     }
+  });
+
+  describe('sync_sssf', () => {
+    it('is a no-op when no registered project has a trace db', async () => {
+      const res = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(res.success).toBe(true);
+      expect(res.data).toEqual({ ids: [], created: [], moved: [] });
+    });
+
+    it('creates a task for a session discovered directly via SSSF, leaving adw unset; re-running is idempotent', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({
+        type: 'create_project',
+        payload: { id: 'ext-proj', path: projectPath, adws: [{ id: 'plan-build', path: 'adws/adw_plan_build.py' }] }
+      });
+      seedSssfDb(projectPath, [
+        { adw_id: 'ab12ab12', adw_name: 'adw_plan_build', request: 'add a widget', status: 'running' }
+      ]);
+
+      const res = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(res.success).toBe(true);
+      expect(res.data.created.length).toBe(1);
+      expect(res.data.created[0].id).toBe('ab12ab12');
+      expect(res.data.created[0].status).toBe('in-progress');
+      expect(res.data.created[0].adw).toBeUndefined();
+      expect(res.data.created[0].project).toBe('ext-proj');
+
+      const board = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(board.task_order['in-progress']).toContain('ab12ab12');
+
+      // Re-running must not create a duplicate.
+      const again = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(again.data.created.length).toBe(0);
+      const allTasks = await engine.executeCommand({ type: 'list_tasks', payload: {} });
+      expect(allTasks.data.filter((t: any) => t.id === 'ab12ab12').length).toBe(1);
+    });
+
+    it('moves an in-progress synced task to ready-for-review when its session succeeds', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({ type: 'create_project', payload: { id: 'ext-proj', path: projectPath } });
+      const dbPath = seedSssfDb(projectPath, [{ adw_id: 'cd34cd34', status: 'running', request: 'fix bug' }]);
+
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      let task = await engine.executeCommand({ type: 'get_task', payload: { id: 'cd34cd34' } });
+      expect(task.data.status).toBe('in-progress');
+
+      updateSessionStatus(dbPath, 'cd34cd34', 'success');
+      const res = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(res.data.moved).toEqual([{ id: 'cd34cd34', from: 'in-progress', to: 'ready-for-review' }]);
+
+      task = await engine.executeCommand({ type: 'get_task', payload: { id: 'cd34cd34' } });
+      expect(task.data.status).toBe('ready-for-review');
+      const board = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(board.task_order['ready-for-review']).toContain('cd34cd34');
+      expect(board.task_order['in-progress']).not.toContain('cd34cd34');
+    });
+
+    it('moves an in-progress synced task to failed when its session fails', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({ type: 'create_project', payload: { id: 'ext-proj', path: projectPath } });
+      const dbPath = seedSssfDb(projectPath, [{ adw_id: 'ef56ef56', status: 'running' }]);
+
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      updateSessionStatus(dbPath, 'ef56ef56', 'fail');
+      const res = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(res.data.moved).toEqual([{ id: 'ef56ef56', from: 'in-progress', to: 'failed' }]);
+    });
+
+    it('does not resurrect a deleted synced task (tombstoned via sync-state.json)', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({ type: 'create_project', payload: { id: 'ext-proj', path: projectPath } });
+      seedSssfDb(projectPath, [{ adw_id: 'ab99ab99', status: 'success', request: 'one-off run' }]);
+
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      let found = await engine.executeCommand({ type: 'get_task', payload: { id: 'ab99ab99' } });
+      expect(found.success).toBe(true);
+
+      await engine.executeCommand({ type: 'delete_task', payload: { id: 'ab99ab99' } });
+      found = await engine.executeCommand({ type: 'get_task', payload: { id: 'ab99ab99' } });
+      expect(found.success).toBe(false);
+
+      // Session row is still sitting in the trace db, untouched by the delete.
+      const res = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(res.data.created.length).toBe(0);
+      found = await engine.executeCommand({ type: 'get_task', payload: { id: 'ab99ab99' } });
+      expect(found.success).toBe(false);
+    });
+
+    it('never touches a task that has been manually moved out of in-progress', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({ type: 'create_project', payload: { id: 'ext-proj', path: projectPath } });
+      const dbPath = seedSssfDb(projectPath, [{ adw_id: 'gh78gh78', status: 'running' }]);
+
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      await engine.executeCommand({ type: 'move_task', payload: { id: 'gh78gh78', target_status: 'done' } });
+
+      updateSessionStatus(dbPath, 'gh78gh78', 'fail');
+      const res = await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      expect(res.data.moved).toEqual([]);
+
+      const task = await engine.executeCommand({ type: 'get_task', payload: { id: 'gh78gh78' } });
+      expect(task.data.status).toBe('done');
+    });
+  });
+
+  describe('outcomeToColumn / mapSessionStatusToColumn (pure helpers)', () => {
+    it('maps run outcomes to their target column, or null for a deliberate stop', () => {
+      const outcomeToColumn = (DeterministicEngine as any).outcomeToColumn;
+      expect(outcomeToColumn('success')).toBe('ready-for-review');
+      expect(outcomeToColumn('fail')).toBe('failed');
+      expect(outcomeToColumn('stopped')).toBeNull();
+    });
+
+    it('falls back gracefully when a board is missing the natural target column', () => {
+      const mapSessionStatusToColumn = (DeterministicEngine as any).mapSessionStatusToColumn;
+      const sparseBoard = {
+        title: 'x',
+        columns: [{ id: 'todo', name: 'To Do' }],
+        task_order: {}
+      };
+      expect(mapSessionStatusToColumn(sparseBoard, 'running')).toBe('todo');
+      expect(mapSessionStatusToColumn(sparseBoard, 'success')).toBe('todo');
+      expect(mapSessionStatusToColumn(sparseBoard, 'fail')).toBe('todo');
+
+      const noTodoBoard = { title: 'x', columns: [{ id: 'somewhere', name: 'Somewhere' }], task_order: {} };
+      expect(mapSessionStatusToColumn(noTodoBoard, null)).toBe('somewhere');
+    });
   });
 });

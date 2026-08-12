@@ -194,26 +194,34 @@ FACTORY_SERVER_URL=http://localhost:3000 node cli/bin/factory.js task create \
 ## 5. Kick off the ADW
 
 Click the task card to reopen it. Below the description there's now a
-**workflow run** section with a **▶ start** button.
+**workflow run** section with a **▶ start** button and, once a run exists, a
+compact gantt-style preview strip — one bar per phase, colored by status. A
+running phase's bar pulses, so this strip alone tells you at a glance whether
+something's in flight; you don't need to open anything else to check.
 
-Click it. Watch what happens:
+Click **▶ start**. Watch what happens:
 
 - The card jumps to the `in-progress` column.
-- The panel starts polling every 2s and fills in as phases complete:
-  `request → plan (planner) → build (builder) → commit (git)`, each with a
-  colored status dot.
-- Token count and running cost show up at the top of the panel.
+- The preview strip starts polling every 2s and fills in as phases complete:
+  `request → plan (planner) → build (builder) → commit (git)`.
+- Click the strip itself to open the **full trace** — a real gantt waterfall
+  (see step 6) with per-phase timing, tool-call detail, and cost.
 
-When it finishes, the phase list turns green (or red, with the failing phase
-called out) and the **■ stop** button reverts to **▶ start**. The commit
-really landed in `~/projects/hello-adw` — check `git log` there.
+When it finishes successfully, the strip turns green and the button reverts
+to **▶ start**. The commit really landed in `~/projects/hello-adw` — check
+`git log` there. If it fails, the task **automatically moves to the `Failed`
+column** — no need to dig through logs to notice something broke — and the
+button becomes **↻ re-run**. Clicking it resumes the same ADW session rather
+than starting cold, so whatever context the agents built up isn't lost; a
+failed run is cheap to retry.
 
-The task **stays in `in-progress`** when the ADW finishes; moving it to `done`
-is your call, same as dragging any other card.
+The task stays in `in-progress` on **success**, though — moving it to `Done`
+is your call, same as dragging any other card. Only failure gets an automatic
+move, because that's the state you'd otherwise miss.
 
 **Stopping a run:** click **■ stop** to `SIGTERM` a workflow that's running
-long or went sideways. Cheap to retry — starting the same task again resumes
-its existing ADW session rather than starting cold, so context isn't lost.
+long or went sideways. A deliberate stop does not move the card — only a
+genuine ADW failure does.
 
 **API equivalent**, if you're scripting this instead of clicking:
 ```bash
@@ -227,9 +235,91 @@ curl -s -X POST http://localhost:3000/api/v1/tasks/hello-adw-001/stop
 ## 6. Watch everything at once
 
 Hamburger menu → **Workflow Preview** opens a drawer listing every ADW
-currently running across *all* projects and tasks, each with its own live
-phase list, polling every 3s. Handy when you've queued up several tasks and
-want a single glance at what's cooking. Close it with the `×` or `Esc`.
+currently running across *all* projects and tasks, each with its own mini
+gantt preview, polling every 3s. Click any card to jump into its full trace.
+Handy when you've queued up several tasks and want a single glance at what's
+cooking. Close it with the `×` or `Esc`.
+
+---
+
+## The full trace: a real gantt waterfall
+
+Clicking a mini preview (from the task modal or the Workflow Preview drawer)
+opens the full trace — ported from IndyDevDan's own SSSF visualizer, re-themed
+to match this board:
+
+- A **run strip**: the request, status, and cost/runtime/token stats.
+- A **waterfall**: one lane per engineer/code/agent phase, blocks positioned
+  by real elapsed time, small tick marks for every tool call inside a block
+  (red for a failed call), and a context-window occupancy bar per agent lane.
+- Click any block to open its **phase detail**: the compiled system/user
+  prompts actually sent, gate results with per-item pass/fail evidence, a
+  cost breakdown (input/output/cache/thinking), the agent's declared outputs,
+  and every raw event with expandable tool-call args/results (JSON
+  syntax-highlighted).
+- Inside **agent config**, each agent's entry has a `pi --session <id>` line
+  with a **copy** button — paste it into your own terminal to resume or watch
+  that exact `pi` conversation interactively, outside the board entirely.
+
+---
+
+## Self-hosting: managing AgenticBoard's own repo as a project
+
+Nothing stops the project you register from being AgenticBoard itself — a
+`Project.path` is just a path, unrelated to `WORKSPACE_DIR`, and can live
+anywhere, including nested under your workspace directory.
+
+**Use a separate clone, not the checkout that's currently running the
+server.** Two real reasons:
+
+1. SSSF's commit phase runs `git add -A && commit` on whatever's dirty in
+   that repo — not just the agent's own changes. If it's the same working
+   tree you're actively hand-editing, your in-progress work gets swept into
+   the agent's commit.
+2. The running server process doesn't hot-reload. If an ADW edits
+   `server/*.ts`, you won't see the effect until you `npm run build` and
+   restart — better for that to be an unambiguous, deliberate step on a
+   clone than a surprise on the live checkout.
+
+```bash
+git clone /path/to/AgenticBoard ~/agenticboard-workspace/projects/agenticboard
+cd ~/agenticboard-workspace/projects/agenticboard
+
+mkdir -p .claude/skills
+cp -r /path/to/AgenticBoard/super-simple-software-factory/.claude/skills/sssf .claude/skills/
+uv run .claude/skills/sssf/scripts/install.py
+cp .env.sample .env
+# ... same model/PI_MODELS_PATH fixes as step 2 above
+```
+
+The builder agent has no `writes:` scope by default — it's the one agent
+that's otherwise unrestricted — so on a repo that's your own source it can
+touch anything except SSSF's own machinery (`protected_files` always covers
+`adws/adw_modules/`, `adws/adw_sssf_config/`, `adws/adw_*.py`). Scope it down
+in `adws/adw_sssf_config/sssf.config.yaml`:
+
+```yaml
+  - name: builder
+    writes:
+      - server/
+      - website/
+      - tui/
+      - specs/
+```
+
+Commit the stamped SSSF files (`adws/`, `.env.sample`, `justfile`, updated
+`.gitignore`) before starting any real task, so the tree is clean — the
+`.claude/skills/sssf/` bundle itself is vendored tooling, not this project's
+source, so it's worth gitignoring rather than committing:
+
+```bash
+echo '.claude/skills/sssf/' >> .gitignore
+git add .gitignore .env.sample adws justfile
+git commit -m "Stamp SSSF into this repo"
+```
+
+Then register and use it exactly like any other project (step 3 onward), with
+`path` pointing at the clone.
 
 ---
 

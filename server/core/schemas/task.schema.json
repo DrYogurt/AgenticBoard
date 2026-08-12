@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Task",
   "type": "object",
-  "required": ["id", "name", "status", "project", "adw"],
+  "required": ["id", "name", "status", "project"],
   "properties": {
     "id": {
       "type": "string"

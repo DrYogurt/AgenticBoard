@@ -13,7 +13,8 @@ import {
   RunHandle
 } from './types';
 import { v4 as uuidv4 } from 'uuid';
-import { AdwRuntime } from './runtime';
+import { AdwRuntime, RunOutcome } from './runtime';
+import { openTraceDb, TraceSession } from './trace';
 
 const MUTATION_COMMANDS = new Set([
   'create_task',
@@ -30,8 +31,14 @@ const MUTATION_COMMANDS = new Set([
   'register_extension',
   'remove_extension',
   'register_agent',
-  'update_agent'
+  'update_agent',
+  'sync_sssf'
 ]);
+
+/** How many most-recent sessions to consider per project on each sync pass —
+ *  generous enough that a project with heavy direct-SSSF usage won't miss
+ *  older still-relevant rows, cheap enough to run every few seconds. */
+const SYNC_SESSION_SCAN_LIMIT = 500;
 
 export class DeterministicEngine extends EventEmitter {
   private storage: WorkspaceStorage;
@@ -84,6 +91,8 @@ export class DeterministicEngine extends EventEmitter {
         let affected_ids: string[] = [];
         if (command.payload && (command.payload as any).id) {
           affected_ids.push((command.payload as any).id);
+        } else if (resultData && Array.isArray(resultData.ids)) {
+          affected_ids.push(...resultData.ids);
         } else if (resultData && resultData.id) {
           affected_ids.push(resultData.id);
         }
@@ -158,6 +167,8 @@ export class DeterministicEngine extends EventEmitter {
         return await this.handleStartTask(command.payload);
       case 'stop_task':
         return await this.handleStopTask(command.payload);
+      case 'sync_sssf':
+        return await this.handleSyncSssf(command.payload);
 
       case 'register_extension':
         return await this.handleRegisterExtension(command.payload);
@@ -231,13 +242,27 @@ export class DeterministicEngine extends EventEmitter {
       throw new Error(`Project '${projectId}' not found`);
     }
 
-    const adwId = payload.adw || payload.workflow || (proj.adws && proj.adws[0] ? proj.adws[0].id : 'implement-feature');
-    if (!proj.adws || !proj.adws.some((a) => a.id === adwId)) {
-      throw new Error(`ADW '${adwId}' is not declared by project '${projectId}'`);
+    const projectAdws = proj.adws || [];
+    const requestedAdw = payload.adw || payload.workflow;
+    let adwId: string | undefined;
+    if (requestedAdw) {
+      if (!projectAdws.some((a) => a.id === requestedAdw)) {
+        throw new Error(`ADW '${requestedAdw}' is not declared by project '${projectId}'`);
+      }
+      adwId = requestedAdw;
+    } else {
+      // No ADW requested: default to the project's first one for convenience
+      // if it has any, otherwise this is a plain, non-agentic task — nothing
+      // to default to, and that's fine.
+      adwId = projectAdws[0]?.id;
     }
 
     const board = await this.storage.readBoard();
-    const status = payload.status || (board.columns[0] ? board.columns[0].id : 'todo');
+    // Default status is 'todo' by convention, not "whichever column is
+    // leftmost" — column display order (e.g. 'failed' pinned first so it's
+    // easy to triage) is independent of where new tasks should land.
+    const defaultColumn = board.columns.find((c) => c.id === 'todo') || board.columns[0];
+    const status = payload.status || (defaultColumn ? defaultColumn.id : 'todo');
     if (!board.columns.some((c) => c.id === status)) {
       throw new Error(`Column '${status}' does not exist on board`);
     }
@@ -302,8 +327,17 @@ export class DeterministicEngine extends EventEmitter {
     if (!proj) throw new Error(`Project '${newProject}' not found`);
     task.project = newProject;
 
-    const newAdw = payload.adw || payload.workflow || task.adw;
-    if (!proj.adws || !proj.adws.some((a) => a.id === newAdw)) {
+    // An explicit empty string clears the ADW (opt out to a plain task);
+    // omitting the field entirely keeps whatever the task already had.
+    let newAdw: string | undefined;
+    if (payload.adw !== undefined) {
+      newAdw = payload.adw || undefined;
+    } else if (payload.workflow !== undefined) {
+      newAdw = payload.workflow || undefined;
+    } else {
+      newAdw = task.adw;
+    }
+    if (newAdw && !(proj.adws || []).some((a) => a.id === newAdw)) {
       throw new Error(`ADW '${newAdw}' is not declared by project '${newProject}'`);
     }
     task.adw = newAdw;
@@ -412,10 +446,26 @@ export class DeterministicEngine extends EventEmitter {
     const project = projects.find((p) => p.id === task.project);
     if (!project) throw new Error(`Project '${task.project}' not found`);
 
+    if (!task.adw) throw new Error(`Task '${task.id}' has no ADW selected — nothing to run`);
     const adwEntry = (project.adws || []).find((a) => a.id === task.adw);
     if (!adwEntry) throw new Error(`ADW '${task.adw}' is not declared by project '${project.id}'`);
 
-    const handle = this.runtime.start(task, project, adwEntry);
+    const handle = this.runtime.start(task, project, adwEntry, (outcome) => {
+      // Best-effort: on a genuine ADW finish (success or failure), move the
+      // card so its outcome is visible without opening the task. A deliberate
+      // stop leaves the column alone — that's the one outcome that isn't a
+      // real verdict on the run.
+      const targetColumn = DeterministicEngine.outcomeToColumn(outcome);
+      if (!targetColumn) return;
+      this.storage
+        .readBoard()
+        .then((board) => {
+          if (board.columns.some((c) => c.id === targetColumn)) {
+            return this.executeCommand({ type: 'move_task', payload: { id: task.id, target_status: targetColumn } });
+          }
+        })
+        .catch(() => {});
+    });
 
     // Best-effort: move the card into an "in-progress" column if the board has one.
     // Not required for the run itself, so a failure here never fails the start.
@@ -438,6 +488,153 @@ export class DeterministicEngine extends EventEmitter {
     const project = task.project ? projects.find((p) => p.id === task.project) : undefined;
 
     return this.runtime.stop(payload.id, project);
+  }
+
+  /** Pure outcome->column mapping for handleStartTask's onExit callback, split
+   *  out so it's unit-testable without spawning a real ADW process. */
+  private static outcomeToColumn(outcome: RunOutcome): string | null {
+    if (outcome === 'fail') return 'failed';
+    if (outcome === 'success') return 'ready-for-review';
+    return null; // 'stopped' is not a verdict on the run — leave the column alone
+  }
+
+  /** Where a freshly-discovered (or just-created) task should land, based on
+   *  its SSSF session's status, with graceful fallbacks if this board doesn't
+   *  have the "natural" column for that status. */
+  private static mapSessionStatusToColumn(board: Board, status: TraceSession['status']): string {
+    const has = (id: string) => board.columns.some((c) => c.id === id);
+    if (status === 'running' && has('in-progress')) return 'in-progress';
+    if (status === 'success' && has('ready-for-review')) return 'ready-for-review';
+    if (status === 'fail' && has('failed')) return 'failed';
+    if (has('todo')) return 'todo';
+    return board.columns[0]?.id ?? 'todo';
+  }
+
+  /**
+   * Polls every registered project's SSSF trace db (or just one, if
+   * `project_id` is given) for two things a board-only view would otherwise
+   * miss entirely: ADWs started directly via SSSF (bypassing the board), and
+   * board-started runs whose completion this process never saw (e.g. a server
+   * restart lost AdwRuntime's in-memory tracking). See trace.ts's `sessions()`/
+   * `session()` — SSSF itself has no push/hook mechanism, so polling is the
+   * only option (confirmed: even SSSF's own visualizer works this way).
+   *
+   * Two steps per project, sharing one board read/write so a tick that touches
+   * several projects still costs one lock + one validation + one SSE event:
+   *  1. Create: any session id not already a task in that project (and not
+   *     already tombstoned in sync-state.json, so a deleted synced task never
+   *     resurrects) becomes a new task. `task.adw` is deliberately left unset —
+   *     SSSF's `adw_name` (script filename) and `project.adws[].id` (board-
+   *     declared workflow id) are different namespaces with no safe mapping,
+   *     and an unset adw is already a valid, "can't be started from the board"
+   *     state used elsewhere for plain tasks.
+   *  2. Reconcile: tasks already in 'in-progress' whose session has since
+   *     finished get moved — scoped to 'in-progress' ONLY so this never
+   *     fights a user who dragged a card somewhere else by hand.
+   * A malformed row must not fail the whole pass, so per-row errors are caught
+   * and skipped rather than thrown.
+   */
+  private async handleSyncSssf(payload?: { project_id?: string }): Promise<{
+    ids: string[];
+    created: Task[];
+    moved: { id: string; from: string; to: string }[];
+  }> {
+    const allProjects = await this.storage.readProjects();
+    const projects = payload?.project_id ? allProjects.filter((p) => p.id === payload.project_id) : allProjects;
+
+    const board = await this.storage.readBoard();
+    const syncState = await this.storage.readSyncState();
+    const created: Task[] = [];
+    const moved: { id: string; from: string; to: string }[] = [];
+
+    for (const project of projects) {
+      let db;
+      try {
+        db = openTraceDb(project.path);
+      } catch {
+        continue;
+      }
+      if (!db) continue;
+
+      try {
+        const seen = new Set(syncState[project.id] || []);
+        const allTasks = await this.storage.listTasks();
+        const existingIds = new Set(allTasks.filter((t) => t.project === project.id).map((t) => t.id));
+
+        // Step 1: create tasks for sessions this project's board doesn't know about yet.
+        let sessions: TraceSession[] = [];
+        try {
+          sessions = db.sessions(SYNC_SESSION_SCAN_LIMIT);
+        } catch {
+          // a trace db mid-write or with an unexpected shape just yields nothing this tick
+        }
+        for (const session of sessions) {
+          try {
+            if (!session.adw_id || existingIds.has(session.adw_id) || seen.has(session.adw_id)) continue;
+
+            const status = DeterministicEngine.mapSessionStatusToColumn(board, session.status);
+            const now = new Date().toISOString();
+            const label = (session.request || session.adw_id).slice(0, 200);
+            const task: Task = {
+              id: session.adw_id,
+              name: label,
+              title: label,
+              status,
+              project: project.id,
+              description: session.request || '',
+              created_at: session.started_at || now,
+              updated_at: now
+            };
+
+            await this.storage.writeTask(task);
+            if (!board.task_order[status]) board.task_order[status] = [];
+            board.task_order[status].push(task.id);
+
+            created.push(task);
+            existingIds.add(task.id);
+            seen.add(task.id);
+          } catch {
+            // one bad session row must not fail the whole sync pass
+          }
+        }
+
+        // Step 2: reconcile in-progress tasks whose sessions have since finished.
+        const inProgress = (await this.storage.listTasks()).filter(
+          (t) => t.project === project.id && t.status === 'in-progress'
+        );
+        for (const task of inProgress) {
+          try {
+            const session = db.session(task.id);
+            if (!session) continue;
+
+            const target = session.status === 'success' ? 'ready-for-review' : session.status === 'fail' ? 'failed' : null;
+            if (!target || !board.columns.some((c) => c.id === target)) continue;
+
+            task.status = target;
+            task.updated_at = new Date().toISOString();
+            await this.storage.writeTask(task);
+
+            board.task_order['in-progress'] = (board.task_order['in-progress'] || []).filter((id) => id !== task.id);
+            if (!board.task_order[target]) board.task_order[target] = [];
+            if (!board.task_order[target].includes(task.id)) board.task_order[target].push(task.id);
+
+            moved.push({ id: task.id, from: 'in-progress', to: target });
+          } catch {
+            // one bad row must not fail the whole sync pass
+          }
+        }
+
+        syncState[project.id] = Array.from(seen);
+      } finally {
+        db.close();
+      }
+    }
+
+    await this.storage.writeBoard(board);
+    await this.storage.writeSyncState(syncState);
+    await this.validateStateInvariants();
+
+    return { ids: [...created.map((t) => t.id), ...moved.map((m) => m.id)], created, moved };
   }
 
   // --- Column Handlers ---
@@ -540,7 +737,10 @@ export class DeterministicEngine extends EventEmitter {
       name: payload.name || payload.id,
       path: payload.path,
       agent_files: payload.agent_files || ['AGENTS.md'],
-      adws: payload.adws && payload.adws.length > 0 ? payload.adws : [...DEFAULT_ADWS],
+      // No fabricated placeholder ADWs — a project with none is a valid,
+      // permanent state (a plain, non-agentic project). Register real ones
+      // via update_project/register once SSSF (or another workflow) exists.
+      adws: payload.adws || [],
       integrations: payload.integrations || [],
       metadata: payload.metadata || {},
       created_at: new Date().toISOString()

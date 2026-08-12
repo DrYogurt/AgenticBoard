@@ -10,7 +10,10 @@ interface ActiveRun {
   projectId: string;
   startedAt: string;
   logPath: string;
+  stoppedByUser: boolean;
 }
+
+export type RunOutcome = 'success' | 'fail' | 'stopped';
 
 /**
  * Spawns and tracks SSSF ADW processes (uv run adws/adw_*.py) for tasks.
@@ -51,7 +54,7 @@ export class AdwRuntime {
     return path.resolve(project.path, adw.path);
   }
 
-  start(task: Task, project: Project, adw: ADW): RunHandle {
+  start(task: Task, project: Project, adw: ADW, onExit?: (outcome: RunOutcome) => void): RunHandle {
     const existing = this.active.get(task.id);
     if (existing) {
       throw new Error(`Task '${task.id}' already has a running ADW (pid ${existing.proc.pid})`);
@@ -91,11 +94,41 @@ export class AdwRuntime {
     }
 
     const startedAt = new Date().toISOString();
-    const run: ActiveRun = { proc, adwId: task.id, projectId: project.id, startedAt, logPath };
+    const run: ActiveRun = { proc, adwId: task.id, projectId: project.id, startedAt, logPath, stoppedByUser: false };
     this.active.set(task.id, run);
 
-    proc.on('exit', () => this.active.delete(task.id));
-    proc.on('error', () => this.active.delete(task.id));
+    const finish = (exitCode: number | null) => {
+      this.active.delete(task.id);
+      if (!onExit) return;
+      if (run.stoppedByUser) {
+        onExit('stopped');
+        return;
+      }
+      // The trace db (written by SSSF's own tracer) is the authoritative source
+      // for success/fail — it reflects run.finish(accepted=...), not just the
+      // process exit code. Fall back to the exit code only if no session row
+      // exists at all (e.g. the process died before ever reaching a phase).
+      let outcome: RunOutcome = exitCode === 0 ? 'success' : 'fail';
+      try {
+        const db = openTraceDb(project.path);
+        if (db) {
+          try {
+            const session = db.session(task.id);
+            if (session?.status === 'success' || session?.status === 'fail') {
+              outcome = session.status;
+            }
+          } finally {
+            db.close();
+          }
+        }
+      } catch {
+        // keep the exit-code-derived outcome
+      }
+      onExit(outcome);
+    };
+
+    proc.on('exit', (code) => finish(code));
+    proc.on('error', () => finish(1));
 
     return {
       task_id: task.id,
@@ -111,6 +144,7 @@ export class AdwRuntime {
   stop(taskId: string, project?: Project): { stopped: boolean; pid?: number; message: string } {
     const run = this.active.get(taskId);
     if (run) {
+      run.stoppedByUser = true;
       try {
         run.proc.kill('SIGTERM');
         return { stopped: true, pid: run.proc.pid, message: `Sent SIGTERM to pid ${run.proc.pid}` };

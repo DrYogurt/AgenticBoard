@@ -32,13 +32,55 @@ export class WorkspaceStorage {
     this.validator = new SchemaValidator(fallbackSchemasDir);
     
     // Auto-migrate workspace data on instantiation if workspace exists and needs migration
-    if (fs.existsSync(path.join(this.workspaceDir, 'board.json')) && this.needsMigration()) {
-      this.migrateWorkspaceData();
+    if (fs.existsSync(path.join(this.workspaceDir, 'board.json'))) {
+      this.ensureBoardColumns();
+      if (this.needsMigration()) {
+        this.migrateWorkspaceData();
+      }
     }
   }
 
   public getValidator(): SchemaValidator {
     return this.validator;
+  }
+
+  // Columns that must exist on every board, added here (rather than baked only
+  // into initWorkspace's default) so an EXISTING workspace's board.json also
+  // picks them up on next boot — a board-shape addition, not a task/project
+  // field migration, so it's deliberately separate from needsMigration()/
+  // migrateWorkspaceData() below.
+  private static readonly REQUIRED_COLUMNS: { id: string; name: string; description: string; after: string }[] = [
+    {
+      id: 'ready-for-review',
+      name: 'Ready for Review',
+      description: 'ADW runs that finished successfully — review before marking done',
+      after: 'in-progress'
+    }
+  ];
+
+  private ensureBoardColumns(): void {
+    const boardPath = path.join(this.workspaceDir, 'board.json');
+    if (!fs.existsSync(boardPath)) return;
+    let board: Board;
+    try {
+      board = JSON.parse(fs.readFileSync(boardPath, 'utf8'));
+    } catch {
+      return; // malformed board.json is handled (and reported) by readBoard()
+    }
+
+    let changed = false;
+    for (const col of WorkspaceStorage.REQUIRED_COLUMNS) {
+      if (board.columns.some((c) => c.id === col.id)) continue;
+      const afterIdx = board.columns.findIndex((c) => c.id === col.after);
+      board.columns.splice(afterIdx >= 0 ? afterIdx + 1 : board.columns.length, 0, {
+        id: col.id,
+        name: col.name,
+        description: col.description
+      });
+      if (!board.task_order[col.id]) board.task_order[col.id] = [];
+      changed = true;
+    }
+    if (changed) this.atomicWriteJSON(boardPath, board);
   }
 
   public static initWorkspace(targetDir: string): void {
@@ -82,13 +124,17 @@ export class WorkspaceStorage {
       const defaultBoard: Board = {
         title: 'Software Factory Board',
         columns: [
+          { id: 'failed', name: 'Failed', description: 'ADW runs that ended in failure — re-run from here' },
           { id: 'todo', name: 'To Do', description: 'Tasks pending work' },
           { id: 'in-progress', name: 'In Progress', description: 'Tasks currently active' },
+          { id: 'ready-for-review', name: 'Ready for Review', description: 'ADW runs that finished successfully — review before marking done' },
           { id: 'done', name: 'Done', description: 'Completed tasks' }
         ],
         task_order: {
+          'failed': [],
           'todo': [],
           'in-progress': [],
+          'ready-for-review': [],
           'done': []
         },
         updated_at: new Date().toISOString()
@@ -124,6 +170,14 @@ export class WorkspaceStorage {
     const agentsPath = path.join(absPath, 'agents.json');
     if (!fs.existsSync(agentsPath)) {
       fs.writeFileSync(agentsPath, JSON.stringify([], null, 2), 'utf8');
+    }
+
+    // Default sync-state.json — tombstones adw_ids the SSSF sync pass has
+    // already synced, per project, so a deleted synced task is never
+    // recreated just because its underlying SSSF session row still exists.
+    const syncStatePath = path.join(absPath, 'sync-state.json');
+    if (!fs.existsSync(syncStatePath)) {
+      fs.writeFileSync(syncStatePath, JSON.stringify({}, null, 2), 'utf8');
     }
   }
 
@@ -192,12 +246,17 @@ export class WorkspaceStorage {
     return snapshot;
   }
 
+  public getSyncStatePath(): string {
+    return path.join(this.workspaceDir, 'sync-state.json');
+  }
+
   public snapshotWorkspace(): Map<string, Buffer | null> {
     const paths: string[] = [
       this.getBoardPath(),
       this.getProjectsPath(),
       path.join(this.workspaceDir, 'extensions.json'),
-      path.join(this.workspaceDir, 'agents.json')
+      path.join(this.workspaceDir, 'agents.json'),
+      this.getSyncStatePath()
     ];
     const tasksDir = path.join(this.workspaceDir, 'tasks');
     if (fs.existsSync(tasksDir)) {
@@ -257,7 +316,10 @@ export class WorkspaceStorage {
       try {
         const projects: Project[] = JSON.parse(fs.readFileSync(pPath, 'utf8'));
         for (const proj of projects) {
-          if (!proj.adws || proj.adws.length === 0 || !proj.integrations || !proj.metadata) {
+          // adws.length === 0 is a legitimate, permanent state (a project
+          // that only ever hosts plain, non-agentic tasks) — not a sign of
+          // un-migrated legacy data, so it must not force a migration pass.
+          if (!proj.integrations || !proj.metadata) {
             return true;
           }
         }
@@ -275,7 +337,9 @@ export class WorkspaceStorage {
             const raw = fs.readFileSync(path.join(tasksDir, f), 'utf8');
             const taskObj = JSON.parse(raw);
             if (taskObj.title && !taskObj.name) return true;
-            if (!taskObj.name || !taskObj.project || !taskObj.adw || 'agent' in taskObj) return true;
+            // A missing adw is a legitimate, permanent state (a plain,
+            // non-agentic task) — not a sign of un-migrated legacy data.
+            if (!taskObj.name || !taskObj.project || 'agent' in taskObj) return true;
           } catch {
             return true;
           }
@@ -359,10 +423,8 @@ export class WorkspaceStorage {
 
     let projectsModified = false;
     for (const proj of projects) {
-      if (!proj.adws || proj.adws.length === 0) {
-        proj.adws = [...DEFAULT_ADWS];
-        projectsModified = true;
-      }
+      // Deliberately not backfilling DEFAULT_ADWS onto adws-less projects
+      // here — that's now a valid permanent state, not something to migrate.
       if (!proj.integrations) {
         proj.integrations = [];
         projectsModified = true;
@@ -403,12 +465,8 @@ export class WorkspaceStorage {
             taskObj.project = projects[0]?.id || 'tasks';
             taskModified = true;
           }
-          const proj = projects.find((p) => p.id === taskObj.project) || projects[0];
-          const defaultAdwId = (proj && proj.adws && proj.adws[0]?.id) || 'implement-feature';
-          if (!taskObj.adw) {
-            taskObj.adw = defaultAdwId;
-            taskModified = true;
-          }
+          // Deliberately not backfilling a default adw here — a missing one
+          // is now a valid permanent state (a plain, non-agentic task).
           if ('agent' in taskObj) {
             delete taskObj.agent;
             taskModified = true;
@@ -592,6 +650,26 @@ export class WorkspaceStorage {
     }
     await this.withLock(aPath, () => {
       this.atomicWriteJSON(aPath, agents);
+    });
+  }
+
+  // Sync state — internal bookkeeping for the SSSF sync pass (which adw_ids
+  // have already been synced per project), not part of the public data model,
+  // so it's deliberately not schema-validated like the collections above.
+  public async readSyncState(): Promise<Record<string, string[]>> {
+    const sPath = this.getSyncStatePath();
+    if (!fs.existsSync(sPath)) return {};
+    try {
+      return JSON.parse(fs.readFileSync(sPath, 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  public async writeSyncState(state: Record<string, string[]>): Promise<void> {
+    const sPath = this.getSyncStatePath();
+    await this.withLock(sPath, () => {
+      this.atomicWriteJSON(sPath, state);
     });
   }
 }

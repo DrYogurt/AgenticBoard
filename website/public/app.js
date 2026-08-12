@@ -407,47 +407,51 @@ async function fetchBoardState() {
 let taskTracePollTimer = null;
 let previewPollTimer = null;
 
-function renderPhaseList(phases) {
-  if (!phases || phases.length === 0) {
-    return '<div class="trace-empty">no phases recorded yet</div>';
-  }
-  return `<div class="phase-list">${phases
+// Compact, equal-width gantt-style strip — a preview, not the real timeline
+// (that's the full trace modal in trace.js). Doubles as the running indicator:
+// the active phase's bar pulses, so this alone is enough to see "it's working".
+function renderMiniGantt(session, phases) {
+  const status = (session && session.status) || 'running';
+  const tokens = session && typeof session.total_tokens === 'number' ? session.total_tokens.toLocaleString() : '0';
+  const cost = session && typeof session.total_cost === 'number' ? `$${session.total_cost.toFixed(4)}` : '$0.0000';
+  const bars = (phases || [])
     .map((p) => {
-      const status = p.status || 'queued';
-      return `
-        <div class="phase-row phase-${escapeHTML(status)}">
-          <span class="phase-dot"></span>
-          <span class="phase-name">${escapeHTML(p.name || '')}</span>
-          <span class="phase-owner">${escapeHTML(p.owner || '')}</span>
-          <span class="phase-status">${escapeHTML(status)}</span>
-        </div>`;
+      const s = p.status || 'queued';
+      return `<span class="mini-bar mini-${escapeHTML(s)}" title="${escapeHTML(p.name || '')} — ${escapeHTML(s)}"></span>`;
     })
-    .join('')}</div>`;
+    .join('');
+  return `
+    <div class="mini-gantt" data-open-trace="1" title="click to open the full trace">
+      <div class="mini-gantt-header">
+        <span class="run-status-badge run-status-${escapeHTML(status)}">${escapeHTML(status)}</span>
+        <span class="session-meta">${tokens} tok · ${cost}</span>
+      </div>
+      <div class="mini-gantt-bars">${bars || '<span class="trace-empty">no phases yet</span>'}</div>
+    </div>`;
 }
 
-function renderSessionSummary(session) {
-  if (!session) return '';
-  const status = session.status || 'running';
-  const tokens = typeof session.total_tokens === 'number' ? session.total_tokens.toLocaleString() : '0';
-  const cost = typeof session.total_cost === 'number' ? `$${session.total_cost.toFixed(4)}` : '$0.0000';
-  return `
-    <div class="session-summary">
-      <span class="run-status-badge run-status-${escapeHTML(status)}">${escapeHTML(status)}</span>
-      <span class="session-meta">${tokens} tok · ${cost}</span>
-    </div>`;
+function taskDisplayName(task) {
+  return task ? task.name || task.title || task.id : '';
 }
 
 async function pollTaskTrace(taskId) {
   if (!dom.taskTracePanel) return;
   try {
     const detail = await apiCall(`/api/v1/tasks/${taskId}/trace`);
-    dom.taskTracePanel.innerHTML = renderSessionSummary(detail.session) + renderPhaseList(detail.phases);
+    dom.taskTracePanel.innerHTML = renderMiniGantt(detail.session, detail.phases);
     const running = detail.session && detail.session.status === 'running';
-    if (dom.btnStartTask) dom.btnStartTask.classList.toggle('hidden', !!running);
+    const failed = detail.session && detail.session.status === 'fail';
+    if (dom.btnStartTask) {
+      dom.btnStartTask.classList.toggle('hidden', !!running);
+      dom.btnStartTask.textContent = failed ? '↻ re-run' : '▶ start';
+    }
     if (dom.btnStopTask) dom.btnStopTask.classList.toggle('hidden', !running);
   } catch (err) {
     dom.taskTracePanel.innerHTML = '<div class="trace-empty">not started yet — click start to launch this task\'s ADW</div>';
-    if (dom.btnStartTask) dom.btnStartTask.classList.remove('hidden');
+    if (dom.btnStartTask) {
+      dom.btnStartTask.classList.remove('hidden');
+      dom.btnStartTask.textContent = '▶ start';
+    }
     if (dom.btnStopTask) dom.btnStopTask.classList.add('hidden');
   }
 }
@@ -463,27 +467,27 @@ function stopTaskTracePolling() {
   taskTracePollTimer = null;
 }
 
-async function pollActiveRuns() {
+async function pollWorkflowPreview() {
   if (!dom.previewDrawerBody) return;
   try {
-    const runs = await apiCall('/api/v1/runs/active');
-    if (!runs || runs.length === 0) {
-      dom.previewDrawerBody.innerHTML = '<div class="trace-empty">no active workflows</div>';
-      return;
-    }
-    const cards = await Promise.all(
-      runs.map(async (run) => {
+    const [runs, liveAgents] = await Promise.all([
+      apiCall('/api/v1/runs/active').catch(() => []),
+      apiCall('/api/v1/live-agents').catch(() => [])
+    ]);
+
+    const runCards = await Promise.all(
+      (runs || []).map(async (run) => {
         const task = state.tasks.find((t) => t.id === run.task_id);
-        const taskName = task ? task.name || task.title || run.task_id : run.task_id;
+        const taskName = taskDisplayName(task) || run.task_id;
         let body = '<div class="trace-empty">loading…</div>';
         try {
           const detail = await apiCall(`/api/v1/tasks/${run.task_id}/trace`);
-          body = renderSessionSummary(detail.session) + renderPhaseList(detail.phases);
+          body = renderMiniGantt(detail.session, detail.phases);
         } catch {
           body = '<div class="trace-empty">waiting for trace…</div>';
         }
         return `
-          <div class="preview-run-card">
+          <div class="preview-run-card" data-open-trace-task="${escapeHTML(run.task_id)}" data-open-trace-name="${escapeHTML(taskName)}">
             <div class="preview-run-header">
               <strong>${escapeHTML(taskName)}</strong>
               <span class="task-id-tag">${escapeHTML(run.task_id)}</span>
@@ -492,7 +496,42 @@ async function pollActiveRuns() {
           </div>`;
       })
     );
-    dom.previewDrawerBody.innerHTML = cards.join('');
+
+    // Live agents already shown above as a board-tracked run don't need a second card —
+    // this section is specifically for agents /api/v1/runs/active can't see (started
+    // directly via SSSF, or a run that outlived a server restart).
+    const shownTaskIds = new Set((runs || []).map((r) => r.task_id));
+    const agentCards = (liveAgents || [])
+      .filter((a) => !a.task_id || !shownTaskIds.has(a.task_id))
+      .map((a) => {
+        const task = a.task_id ? state.tasks.find((t) => t.id === a.task_id) : null;
+        const label = (task && taskDisplayName(task)) || a.session_request || a.agent_name || a.adw_id;
+        const openAttrs = a.task_id
+          ? `data-open-trace-task="${escapeHTML(a.task_id)}" data-open-trace-name="${escapeHTML(label)}"`
+          : '';
+        return `
+          <div class="preview-run-card" ${openAttrs}>
+            <div class="preview-run-header">
+              <strong>${escapeHTML(label)}</strong>
+              <span class="task-id-tag">${escapeHTML(a.project_id)}</span>
+            </div>
+            <div class="preview-agent-meta">
+              agent: ${escapeHTML(a.agent_name || '—')} · pid ${escapeHTML(String(a.pid))}${a.task_id ? '' : ' · not yet a board task'}
+            </div>
+          </div>`;
+      });
+
+    if (runCards.length === 0 && agentCards.length === 0) {
+      dom.previewDrawerBody.innerHTML = '<div class="trace-empty">no active workflows</div>';
+      return;
+    }
+
+    const sections = [];
+    if (runCards.length > 0) sections.push(runCards.join(''));
+    if (agentCards.length > 0) {
+      sections.push(`<div class="preview-section-label">live agents</div>${agentCards.join('')}`);
+    }
+    dom.previewDrawerBody.innerHTML = sections.join('');
   } catch (err) {
     dom.previewDrawerBody.innerHTML = '<div class="trace-empty">failed to load active workflows</div>';
   }
@@ -503,8 +542,8 @@ function toggleWorkflowPreview() {
   const isHidden = dom.workflowPreviewPanel.classList.contains('hidden');
   if (isHidden) {
     dom.workflowPreviewPanel.classList.remove('hidden');
-    pollActiveRuns();
-    previewPollTimer = setInterval(pollActiveRuns, 3000);
+    pollWorkflowPreview();
+    previewPollTimer = setInterval(pollWorkflowPreview, 3000);
   } else {
     closeWorkflowPreview();
   }
@@ -618,9 +657,15 @@ function updateAdwSelectForProject(projectId, selectedAdw = null) {
   dom.taskAdwInput.innerHTML = '';
 
   const proj = state.projects.find((p) => p.id === projectId) || state.projects[0];
-  const adws = (proj && proj.adws && proj.adws.length > 0)
-    ? proj.adws
-    : [{ id: 'implement-feature', path: './workflows/implement-feature' }, { id: 'fix-bug', path: './workflows/fix-bug' }];
+  const adws = (proj && proj.adws) || [];
+
+  // A task's ADW is optional — a project with none (or a task that opts out)
+  // is a plain, non-agentic checklist item, not an error state. Always offer
+  // that choice explicitly rather than fabricating fake workflow options.
+  const noneOpt = document.createElement('option');
+  noneOpt.value = '';
+  noneOpt.textContent = adws.length === 0 ? 'no workflow (this project has none registered)' : 'no workflow (manual task)';
+  dom.taskAdwInput.appendChild(noneOpt);
 
   adws.forEach((a) => {
     const opt = document.createElement('option');
@@ -633,6 +678,8 @@ function updateAdwSelectForProject(projectId, selectedAdw = null) {
     dom.taskAdwInput.value = selectedAdw;
   } else if (adws[0]) {
     dom.taskAdwInput.value = adws[0].id;
+  } else {
+    dom.taskAdwInput.value = '';
   }
 }
 
@@ -982,8 +1029,32 @@ async function handleDrop(e) {
   }
 }
 
+// 'todo' is the conventional landing column for new tasks regardless of
+// display order — e.g. 'failed' is pinned leftmost for triage visibility,
+// but that's not where a brand-new task should default to.
+function defaultTaskStatusId() {
+  const cols = (state.board && state.board.columns) || [];
+  const todo = cols.find((c) => c.id === 'todo');
+  return (todo || cols[0] || {}).id || 'todo';
+}
+
+function showTaskFormError(message) {
+  clearTaskFormError();
+  const banner = document.createElement('div');
+  banner.id = 'task-form-error';
+  banner.className = 'error-bar';
+  banner.textContent = message;
+  dom.formTask.insertBefore(banner, dom.formTask.firstChild);
+}
+
+function clearTaskFormError() {
+  const existing = document.getElementById('task-form-error');
+  if (existing) existing.remove();
+}
+
 // --- Modals Controller ---
 function openTaskModal(task = null) {
+  clearTaskFormError();
   updateProjectSelects();
 
   if (task) {
@@ -992,13 +1063,18 @@ function openTaskModal(task = null) {
     dom.taskTitleInput.value = task.name || task.title || '';
     dom.taskProjectInput.value = task.project || (state.projects[0]?.id || 'tasks');
     updateAdwSelectForProject(dom.taskProjectInput.value, task.adw);
-    dom.taskStatusInput.value = task.status || (state.board?.columns[0]?.id || 'todo');
+    dom.taskStatusInput.value = task.status || defaultTaskStatusId();
     dom.taskDescInput.value = task.description || '';
     dom.btnDeleteTask.classList.remove('hidden');
 
     if (dom.taskWorkflowSection) {
-      dom.taskWorkflowSection.classList.remove('hidden');
-      startTaskTracePolling(task.id);
+      if (task.adw) {
+        dom.taskWorkflowSection.classList.remove('hidden');
+        startTaskTracePolling(task.id);
+      } else {
+        dom.taskWorkflowSection.classList.add('hidden');
+        stopTaskTracePolling();
+      }
     }
   } else {
     document.getElementById('task-modal-title').textContent = 'new task';
@@ -1008,7 +1084,7 @@ function openTaskModal(task = null) {
       dom.taskProjectInput.value = state.projects[0].id;
     }
     updateAdwSelectForProject(dom.taskProjectInput.value);
-    dom.taskStatusInput.value = state.board?.columns[0]?.id || 'todo';
+    dom.taskStatusInput.value = defaultTaskStatusId();
     dom.btnDeleteTask.classList.add('hidden');
 
     if (dom.taskWorkflowSection) dom.taskWorkflowSection.classList.add('hidden');
@@ -1213,6 +1289,25 @@ function setupEventListeners() {
     });
   }
 
+  // Mini-gantt preview (task modal) opens the full trace for the open task.
+  if (dom.taskTracePanel) {
+    dom.taskTracePanel.addEventListener('click', () => {
+      const id = dom.taskIdInput.value;
+      if (!id || !dom.taskTracePanel.querySelector('[data-open-trace]')) return;
+      const task = state.tasks.find((t) => t.id === id);
+      AgenticTrace.open(id, taskDisplayName(task));
+    });
+  }
+
+  // Workflow Preview drawer cards each open the full trace for their run.
+  if (dom.previewDrawerBody) {
+    dom.previewDrawerBody.addEventListener('click', (e) => {
+      const card = e.target.closest('[data-open-trace-task]');
+      if (!card) return;
+      AgenticTrace.open(card.dataset.openTraceTask, card.dataset.openTraceName);
+    });
+  }
+
   // Close modals
   document.querySelectorAll('[data-close]').forEach((btn) => {
     btn.addEventListener('click', () => closeModal(btn.dataset.close));
@@ -1221,6 +1316,7 @@ function setupEventListeners() {
   // Task Form Submit
   dom.formTask.addEventListener('submit', async (e) => {
     e.preventDefault();
+    clearTaskFormError();
     const id = dom.taskIdInput.value;
     const taskName = dom.taskTitleInput.value.trim();
     const payload = {
@@ -1232,14 +1328,17 @@ function setupEventListeners() {
       description: dom.taskDescInput.value.trim()
     };
 
-    if (id) {
-      await apiCall(`/api/v1/tasks/${id}`, 'PUT', payload);
-    } else {
-      await apiCall('/api/v1/tasks', 'POST', payload);
+    try {
+      if (id) {
+        await apiCall(`/api/v1/tasks/${id}`, 'PUT', payload);
+      } else {
+        await apiCall('/api/v1/tasks', 'POST', payload);
+      }
+      closeModal('modal-task');
+      fetchBoardState();
+    } catch (err) {
+      showTaskFormError(err.message || 'Failed to save task');
     }
-
-    closeModal('modal-task');
-    fetchBoardState();
   });
 
   // Task Delete Button

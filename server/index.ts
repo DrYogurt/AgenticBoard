@@ -9,6 +9,12 @@ import { openTraceDb } from './core/trace';
 export interface ServerOptions {
   port?: number;
   workspaceDir?: string;
+  /** Poll interval (ms) for reconciling SSSF trace dbs across all registered
+   *  projects — surfaces directly-started SSSF runs as tasks and catches up
+   *  runs whose completion this process missed (see engine.ts's handleSyncSssf).
+   *  Default 0 = disabled: tests construct/listen() a BoardServer repeatedly
+   *  and assert on exact revision numbers, so this must never start itself. */
+  sssfSyncIntervalMs?: number;
 }
 
 export class BoardServer {
@@ -16,10 +22,13 @@ export class BoardServer {
   private server: http.Server | null = null;
   private engine: DeterministicEngine;
   private sseClients: Response[] = [];
+  private syncTimer: NodeJS.Timeout | null = null;
+  private readonly sssfSyncIntervalMs: number;
 
   constructor(options: ServerOptions = {}) {
     const workspaceDir = options.workspaceDir || process.cwd();
     this.engine = new DeterministicEngine(workspaceDir);
+    this.sssfSyncIntervalMs = options.sssfSyncIntervalMs ?? 0;
     this.app = express();
     this.setupMiddleware();
     this.setupRoutes();
@@ -392,6 +401,78 @@ export class BoardServer {
       }
     });
 
+    this.app.get('/api/v1/tasks/:id/trace/envelopes', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveTaskProject(req.params.id);
+        if ('error' in resolved) {
+          res.status(resolved.status).json({ success: false, error: resolved.error });
+          return;
+        }
+        const db = openTraceDb(resolved.project.path);
+        if (!db) {
+          res.status(404).json({ success: false, error: 'No SSSF trace db yet — has this task been started?' });
+          return;
+        }
+        try {
+          res.json({ success: true, data: db.envelopes(resolved.task.id) });
+        } finally {
+          db.close();
+        }
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    this.app.get('/api/v1/tasks/:id/trace/gates', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveTaskProject(req.params.id);
+        if ('error' in resolved) {
+          res.status(resolved.status).json({ success: false, error: resolved.error });
+          return;
+        }
+        const db = openTraceDb(resolved.project.path);
+        if (!db) {
+          res.status(404).json({ success: false, error: 'No SSSF trace db yet — has this task been started?' });
+          return;
+        }
+        try {
+          res.json({ success: true, data: db.gates(resolved.task.id) });
+        } finally {
+          db.close();
+        }
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    const SAFE_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+    this.app.get('/api/v1/tasks/:id/trace/agents/:agent/prompts', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        if (!SAFE_SEGMENT.test(req.params.agent)) {
+          res.status(400).json({ success: false, error: 'Invalid agent name' });
+          return;
+        }
+        const resolved = await resolveTaskProject(req.params.id);
+        if ('error' in resolved) {
+          res.status(resolved.status).json({ success: false, error: resolved.error });
+          return;
+        }
+        const db = openTraceDb(resolved.project.path);
+        if (!db) {
+          res.status(404).json({ success: false, error: 'No SSSF trace db yet — has this task been started?' });
+          return;
+        }
+        try {
+          res.json({ success: true, data: db.prompts(resolved.task.id, req.params.agent) });
+        } finally {
+          db.close();
+        }
+      } catch (err) {
+        next(err);
+      }
+    });
+
     this.app.get('/api/v1/tasks/:id/run-log', async (req: Request, res: Response, next: NextFunction) => {
       try {
         const logPath = path.join(this.engine.getWorkspaceDir(), '.runs', `${req.params.id}.log`);
@@ -411,6 +492,65 @@ export class BoardServer {
     this.app.get('/api/v1/runs/active', async (req: Request, res: Response, next: NextFunction) => {
       try {
         res.json({ success: true, data: this.engine.getActiveRuns() });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    // Live `pi` agents (SSSF observability) — every currently-running agent
+    // invocation in a project's trace db, whether or not it's tied to a board
+    // task (e.g. an ADW started directly via SSSF, bypassing the board). Not
+    // scoped to this server process, unlike /api/v1/runs/active above.
+    const liveAgentsForProject = async (project: Project): Promise<any[]> => {
+      const db = openTraceDb(project.path);
+      if (!db) return [];
+      try {
+        const tasksResult = await this.engine.executeCommand<Task[]>({
+          type: 'list_tasks',
+          payload: { project: project.id }
+        });
+        const taskIds = new Set((tasksResult.data || []).map((t) => t.id));
+        return db.liveProcesses('agent').map((proc) => {
+          const session = db.session(proc.adw_id);
+          return {
+            adw_id: proc.adw_id,
+            agent_name: proc.name,
+            pid: proc.pid,
+            command: proc.command,
+            started_at: proc.started_at,
+            project_id: project.id,
+            task_id: taskIds.has(proc.adw_id) ? proc.adw_id : null,
+            session_request: session?.request ?? null,
+            session_status: session?.status ?? null
+          };
+        });
+      } finally {
+        db.close();
+      }
+    };
+
+    this.app.get('/api/v1/projects/:id/live-agents', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const projectResult = await this.engine.executeCommand<Project>({
+          type: 'get_project',
+          payload: { id: req.params.id }
+        });
+        if (!projectResult.success || !projectResult.data) {
+          res.status(404).json({ success: false, error: projectResult.error || `Project '${req.params.id}' not found` });
+          return;
+        }
+        res.json({ success: true, data: await liveAgentsForProject(projectResult.data) });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    this.app.get('/api/v1/live-agents', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const projectsResult = await this.engine.executeCommand<Project[]>({ type: 'list_projects', payload: {} });
+        const projects = projectsResult.data || [];
+        const perProject = await Promise.all(projects.map((p) => liveAgentsForProject(p)));
+        res.json({ success: true, data: perProject.flat() });
       } catch (err) {
         next(err);
       }
@@ -448,12 +588,29 @@ export class BoardServer {
         const addr = this.server!.address();
         console.log(`[AgenticBoard Server] Deterministic server listening on http://${host}:${typeof addr === 'string' ? port : (addr as any)?.port}`);
         console.log(`[AgenticBoard Server] Workspace: ${this.engine.getWorkspaceDir()}`);
+        if (this.sssfSyncIntervalMs > 0) this.startSssfSyncLoop(this.sssfSyncIntervalMs);
         resolve(typeof addr === 'string' ? port : (addr as any)?.port);
       });
     });
   }
 
+  private startSssfSyncLoop(intervalMs: number): void {
+    const tick = () => {
+      this.engine
+        .executeCommand({ type: 'sync_sssf', payload: {} })
+        .catch((err) => console.error('[AgenticBoard Server] SSSF sync tick failed:', err));
+    };
+    this.syncTimer = setInterval(tick, intervalMs);
+    // Never let this loop keep the process alive on its own (tests, CLI-embedded use, etc).
+    this.syncTimer.unref?.();
+    tick();
+  }
+
   public async close(): Promise<void> {
+    if (this.syncTimer) {
+      clearInterval(this.syncTimer);
+      this.syncTimer = null;
+    }
     return new Promise((resolve, reject) => {
       if (this.server) {
         // Destroy active SSE responses / open sockets
@@ -478,6 +635,9 @@ if (require.main === module) {
   // Auto-init workspace on first boot (idempotent — safe to call on existing workspaces)
   const { WorkspaceStorage } = require('./core/storage');
   WorkspaceStorage.initWorkspace(workspaceDir);
-  const server = new BoardServer({ port, workspaceDir });
+  const sssfSyncIntervalMs = process.env.SSSF_SYNC_INTERVAL_MS
+    ? parseInt(process.env.SSSF_SYNC_INTERVAL_MS, 10)
+    : 5000;
+  const server = new BoardServer({ port, workspaceDir, sssfSyncIntervalMs });
   server.listen(port, host);
 }
