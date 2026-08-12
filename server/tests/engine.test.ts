@@ -323,6 +323,32 @@ describe('DeterministicEngine Integration', () => {
       expect(res.data).toEqual({ ids: [], created: [], moved: [] });
     });
 
+    it('a no-op tick does not bump board.revision or emit an event — regression for the stale-expected_revision bug', async () => {
+      const boardBefore = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+
+      let eventEmitted = false;
+      engine.on('event', () => { eventEmitted = true; });
+
+      // Several ticks in a row, as the unattended poll loop would fire.
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+
+      const boardAfter = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(boardAfter.revision).toBe(boardBefore.revision);
+      expect(eventEmitted).toBe(false);
+
+      // A client that captured expected_revision before those ticks (e.g. a
+      // "new task" form left open across a couple of poll intervals) must
+      // still be able to submit without a spurious conflict.
+      const createRes = await engine.executeCommand({
+        type: 'create_task',
+        payload: { name: 'Should not conflict', project: 'tasks', adw: 'implement-feature' },
+        expected_revision: boardBefore.revision
+      });
+      expect(createRes.success).toBe(true);
+    });
+
     it('creates a task for a session discovered directly via SSSF, leaving adw unset; re-running is idempotent', async () => {
       const projectPath = path.join(tmpDir, 'external-project');
       fs.mkdirSync(projectPath, { recursive: true });

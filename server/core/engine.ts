@@ -64,6 +64,18 @@ export class DeterministicEngine extends EventEmitter {
       const isMutation = MUTATION_COMMANDS.has(command.type);
 
       if (isMutation) {
+        // sync_sssf runs unattended on a timer and is a genuine no-op on most
+        // ticks (nothing new to sync, nothing to reconcile). Every OTHER
+        // mutation command is always user-initiated, so bumping board.revision
+        // and emitting an event on every call is correct there. For sync_sssf
+        // specifically, doing that unconditionally turns board.revision into a
+        // fast-moving counter that silently invalidates every client's
+        // in-flight expected_revision check — e.g. a "new task" form left open
+        // for two tick intervals would reliably 409 on submit even though
+        // nothing anyone cares about actually changed. So: skip the bump/write/
+        // event entirely when this particular command made no real change.
+        let mutated = true;
+
         resultData = await this.storage.withWorkspaceLock(async () => {
           if (command.expected_revision !== undefined) {
             const b = await this.storage.readBoard();
@@ -75,18 +87,27 @@ export class DeterministicEngine extends EventEmitter {
           const snapshot = this.storage.snapshotWorkspace();
           try {
             const res = await this.dispatchCommand(command);
-            
+
+            if (command.type === 'sync_sssf' && DeterministicEngine.isNoOpSyncResult(res)) {
+              mutated = false;
+              return res;
+            }
+
             const board = await this.storage.readBoard();
             board.revision = (board.revision || 0) + 1;
             await this.storage.writeBoard(board);
             await this.validateStateInvariants();
-            
+
             return res;
           } catch (err) {
             this.storage.rollbackWorkspace(snapshot);
             throw err;
           }
         });
+
+        if (!mutated) {
+          return { success: true, data: resultData };
+        }
 
         let affected_ids: string[] = [];
         if (command.payload && (command.payload as any).id) {
@@ -490,6 +511,13 @@ export class DeterministicEngine extends EventEmitter {
     return this.runtime.stop(payload.id, project);
   }
 
+  /** True when a sync_sssf result made no real change — nothing created,
+   *  nothing reconciled — the case executeCommand uses to skip the revision
+   *  bump/event for that particular call. */
+  private static isNoOpSyncResult(res: any): boolean {
+    return Array.isArray(res?.created) && res.created.length === 0 && Array.isArray(res?.moved) && res.moved.length === 0;
+  }
+
   /** Pure outcome->column mapping for handleStartTask's onExit callback, split
    *  out so it's unit-testable without spawning a real ADW process. */
   private static outcomeToColumn(outcome: RunOutcome): string | null {
@@ -630,9 +658,15 @@ export class DeterministicEngine extends EventEmitter {
       }
     }
 
-    await this.storage.writeBoard(board);
-    await this.storage.writeSyncState(syncState);
-    await this.validateStateInvariants();
+    // A no-op tick (nothing created, nothing reconciled) is by far the common
+    // case on an unattended timer — skip the writes/validation entirely rather
+    // than churning board.json/sync-state.json (and their locks) every tick
+    // for content that didn't change.
+    if (created.length > 0 || moved.length > 0) {
+      await this.storage.writeBoard(board);
+      await this.storage.writeSyncState(syncState);
+      await this.validateStateInvariants();
+    }
 
     return { ids: [...created.map((t) => t.id), ...moved.map((m) => m.id)], created, moved };
   }
