@@ -97,6 +97,7 @@ export type CommandType =
   | 'list_project_adws'
   | 'start_task'
   | 'stop_task'
+  | 'clear_task_run'
   | 'sync_sssf'
   | 'register_extension'
   | 'remove_extension'

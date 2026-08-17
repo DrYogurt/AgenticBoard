@@ -235,6 +235,74 @@ describe('AG: Agent Roles section', () => {
     expect(card.textContent).toContain('src/');
     expect(card.textContent).toContain('read-only');
   });
+
+  it('AG-7: a workflow\'s parsed REQUIRED_AGENTS shows on its card and feeds the "referenced, not in roster" list', async () => {
+    const setup = setupBoard([demoProject({
+      adws: [{ id: 'build-feature', name: 'Build Feature', path: 'adws/build_feature.py', parameters: [] }]
+    })], (stub) => {
+      installSssfConfigStub(stub, { agents: [] });
+      stub.on('GET', /^\/api\/v1\/projects\/[^/]+\/adw-agents$/, () => ({ json: { success: true, data: { 'build-feature': ['planner', 'builder'] } } }));
+    });
+    mounted = setup.mounted;
+    await boot(mounted);
+    const doc = await openProjectView(mounted);
+
+    const card = doc.querySelector('.pv-adw-card') as HTMLElement;
+    expect(card.textContent).toContain('planner');
+    expect(card.textContent).toContain('builder');
+    expect(card.textContent).toContain('REQUIRED_AGENTS');
+
+    const rows = doc.querySelectorAll('#pv-agent-roles-list .pv-agent-unregistered-row');
+    const names = Array.from(rows).map((r) => r.textContent);
+    expect(names.some((t) => t!.includes('planner'))).toBe(true);
+    expect(names.some((t) => t!.includes('builder'))).toBe(true);
+  });
+
+  it('AG-8: agent cards collapse/expand like workflow cards, and deleting doesn\'t also toggle the header', async () => {
+    const agents = [{ name: 'coder', purpose: 'writes code' }];
+    const setup = setupBoard([demoProject({ adws: [] })], (stub) => installSssfConfigStub(stub, { agents }));
+    mounted = setup.mounted;
+    const w = mounted.window as any;
+    w.confirm = () => true;
+    await boot(mounted);
+    const doc = await openProjectView(mounted);
+
+    const card = doc.querySelector('#pv-agent-roles-list .pv-agent-card') as HTMLElement;
+    expect(card.classList.contains('pv-expanded')).toBe(false);
+
+    const header = card.querySelector('.pv-agent-card-header') as HTMLElement;
+    dispatch(header, 'click');
+    expect(card.classList.contains('pv-expanded')).toBe(true);
+    dispatch(header, 'click');
+    expect(card.classList.contains('pv-expanded')).toBe(false);
+
+    // Clicking delete (also inside the header) must not also toggle expand —
+    // it should just remove the card.
+    dispatch(header, 'click'); // expand again first
+    expect(card.classList.contains('pv-expanded')).toBe(true);
+    const delBtn = card.querySelector('.pv-icon-btn') as HTMLButtonElement;
+    dispatch(delBtn, 'click');
+    expect(doc.querySelector('#pv-agent-roles-list .pv-agent-card')).toBeFalsy();
+  });
+
+  it('AG-9: a newly-staged agent (via "+ new agent role") lands expanded and scrolled into view', async () => {
+    const setup = setupBoard([demoProject({ adws: [] })], (stub) => installSssfConfigStub(stub, { agents: [] }));
+    mounted = setup.mounted;
+    await boot(mounted);
+    const doc = await openProjectView(mounted);
+
+    dispatch(doc.getElementById('pv-add-agent-btn') as HTMLElement, 'click');
+    const draft = doc.querySelector('#pv-agent-roles-list .pv-agent-card-draft') as HTMLElement;
+    const nameInput = draft.querySelector('input') as HTMLInputElement;
+    nameInput.value = 'reviewer';
+    dispatch(nameInput, 'input');
+    const createBtn = Array.from(draft.querySelectorAll('button')).find((b) => b.textContent === 'Add to Roster') as HTMLButtonElement;
+    dispatch(createBtn, 'click');
+
+    const card = doc.querySelector('#pv-agent-roles-list .pv-agent-card[data-agent-id="reviewer"]') as HTMLElement;
+    expect(card).toBeTruthy();
+    expect(card.classList.contains('pv-expanded')).toBe(true);
+  });
 });
 
 describe('DG: Workflow diagram view', () => {
@@ -329,6 +397,26 @@ describe('DG: Workflow diagram view', () => {
     doc = await openProjectView(mounted, 'other');
     expect(doc.getElementById('pv-adw-list')!.classList.contains('hidden')).toBe(false);
     expect(doc.getElementById('pv-adw-diagram')!.classList.contains('hidden')).toBe(true);
+  });
+
+  it('DG-6: the diagram also draws edges for a workflow\'s parsed REQUIRED_AGENTS, not just type:\'agent\' parameters', async () => {
+    const setup = setupBoard([demoProject({
+      adws: [{ id: 'build-feature', name: 'Build Feature', path: 'adws/build_feature.py', parameters: [] }]
+    })], (stub) => {
+      installSssfConfigStub(stub, { agents: [] });
+      stub.on('GET', /^\/api\/v1\/projects\/[^/]+\/adw-agents$/, () => ({ json: { success: true, data: { 'build-feature': ['planner', 'builder'] } } }));
+    });
+    mounted = setup.mounted;
+    await boot(mounted);
+    const doc = await openProjectView(mounted);
+
+    dispatch(doc.querySelector('#pv-adw-view-toggle [data-view="diagram"]') as HTMLElement, 'click');
+    const diagram = doc.getElementById('pv-adw-diagram')!;
+    const agentNodes = diagram.querySelectorAll('.wd-node-agent');
+    const ids = Array.from(agentNodes).map((n) => (n as HTMLElement).dataset.agentId);
+    expect(ids).toContain('planner');
+    expect(ids).toContain('builder');
+    expect(diagram.querySelectorAll('.wd-edge').length).toBe(2);
   });
 });
 

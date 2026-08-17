@@ -386,6 +386,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  cursor: pointer;
 }
 
 .pv-agent-card-header strong {
@@ -400,6 +401,20 @@
 
 .pv-agent-card-header .form-input {
   flex: 1;
+}
+
+.pv-agent-card.pv-expanded .pv-adw-caret {
+  transform: rotate(90deg);
+}
+
+.pv-agent-card-body {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pv-agent-card.pv-expanded .pv-agent-card-body {
+  display: flex;
 }
 
 .pv-agent-tag {

@@ -100,6 +100,21 @@ SSSF's own visualizer UI, re-themed) — opened from a task's mini trace
 preview or the "Workflow Preview" drawer. Both talk to the same REST/SSE API
 the CLI and TUI use.
 
+An agent phase's "copy" button (the `pi --session-id ... --session-dir ...`
+command for resuming that exact conversation in `pi`) uses a
+`copyTextToClipboard` helper, not `navigator.clipboard.writeText` directly —
+that API is silently `undefined` outside a "secure context" (HTTPS, or
+literally `localhost`), which plain-HTTP access over a LAN/Tailscale IP
+always is; the old code's `else` branch just faked the "copied!" label
+without ever attempting a copy. The helper falls back to the legacy
+`document.execCommand('copy')` via a temporary offscreen textarea, and only
+reports success if a copy actually happened. The run strip's **clear run**
+button (`clear-run` action, `POST /api/v1/tasks/:id/clear-run`) lives here
+too, next to the same session data this copy command resumes — after the
+native `confirm()` dialog, it resets `trace.js`'s own polling `state` and
+re-fetches, which naturally renders the existing "no ADW run yet for this
+task" empty state once the session is gone.
+
 Two further self-contained modules attach themselves to `window` and are
 wired in from `app.js`, so each stays out of the main board file:
 - `project-view.js` (`window.ProjectView`) — the project view opened by
@@ -153,11 +168,29 @@ wired in from `app.js`, so each stays out of the main board file:
   `getPath` is a function, not a captured string, so an ADW's script editor
   always follows the *current* value of `adw.path` even if the user edits
   that field after the editor is already open.
+  A workflow's real agent roster usually isn't a `type: 'agent'` parameter at
+  all, though — that convention only fits the single-agent generic runner
+  (`adw_prompt.py`). Every real multi-phase SSSF workflow instead declares a
+  top-level `REQUIRED_AGENTS = ["planner", "builder"]` list right after its
+  imports, validated via `adw_modules.agents.validate(cfg, REQUIRED_AGENTS)`
+  — baked into the script's own code, not any structured metadata.
+  `GET /api/v1/projects/:id/adw-agents` (`server/index.ts`) regex-extracts
+  that list from each ADW's script file (best-effort — an empty array if the
+  convention isn't there) and `project-view.js` fetches it once per `open()`
+  alongside the sssf-config roster (`loadAdwAgents`/`adwAgentsMap`), showing
+  each workflow's parsed agents as a read-only badge list on its card and
+  feeding them into the same "referenced, not in roster" cross-reference as
+  `type: 'agent'` parameters. Agent cards are collapsible the same way ADW
+  cards are (click the header to expand/collapse; the delete button calls
+  `stopPropagation` so removing an agent doesn't also toggle it); newly
+  staged agents land expanded and scrolled into view.
 - `workflow-diagram.js` (`window.WorkflowDiagram`) — a standalone, stateless
   renderer for a clickable UML-style box-and-line view of a project's `adws[]`
-  (one box per workflow) and the agent ids their `type: 'agent'` parameters
-  reference (one deduplicated box per unique id, since the same role can be
-  shared across workflows). It never mutates data or opens anything itself —
+  and the agent names they reference — the union of `type: 'agent'`
+  parameter defaults and each workflow's parsed `REQUIRED_AGENTS`
+  (`opts.requiredAgentsByAdwId`, passed in by `project-view.js`; one
+  deduplicated box per unique name, since the same role can be shared across
+  workflows). It never mutates data or opens anything itself —
   `render(el, project, opts)` takes `onSelectAdw`/`onSelectAgent`/
   `onAddWorkflow`/`onAddAgent` callbacks, and `project-view.js` owns what
   those do (switch to the list view and expand/flash the matching card, or
@@ -183,6 +216,20 @@ wired in from `app.js`, so each stays out of the main board file:
   extra JS. `.modal-body` carries `overflow-x: auto` so a widened box scrolls
   within the modal instead of being clipped by `.modal-card`'s
   `overflow: hidden` (which stays in place for its rounded-corner clipping).
+  Header scaling creates a second, separate problem beyond cross-line
+  vertical alignment: the textarea's own native caret only ever tracks
+  *unscaled* text, so on a header line it silently drifts away from the
+  larger visible glyphs the further into the line you click or type. Fixed
+  with a synthetic caret rather than a layout change — a plain `<textarea>`
+  can't have per-line font sizes anyway, so there's no way to make the real
+  caret track scaled text natively. Since both layers share one monospace
+  font and there's no soft-wrap, the scaled x position is exact arithmetic
+  (`updateCaret` in markdown-editor.js): unscaled through the `"## "` mark,
+  then `column * charWidth * levelScale` beyond it (`charWidth` measured
+  once via a hidden probe span). When the real caret sits on a header line,
+  `caret-color: transparent` hides the native one and a `.mde-synthetic-caret`
+  div is positioned there instead; everywhere else the native caret is
+  already correct and this stays hidden.
 
 Document upload lives in the task modal and posts `multipart/form-data` to
 `POST /api/v1/projects/:id/documents`, which stores files under the
@@ -192,12 +239,28 @@ boundary.
 
 `server/index.ts` also exposes a generic `GET`/`PUT /api/v1/projects/:id/file?path=...`
 (project-root-confined text file read/write — workflow scripts, SSSF prompt
-files) and a structured `GET`/`PUT /api/v1/projects/:id/sssf-config`
+files), a structured `GET`/`PUT /api/v1/projects/:id/sssf-config`
 (comment-preserving edits to `adws/adw_sssf_config/sssf.config.yaml` via the
-`yaml` package's `Document` API). Both share `resolveProjectPath`/a
-`resolveConfinedFilePath` prefix-check with the document-upload route — never
-trust a client-supplied relative path without resolving + prefix-checking it
-against the project root first.
+`yaml` package's `Document` API), and `GET /api/v1/projects/:id/adw-agents`
+(regex-parses each workflow script's `REQUIRED_AGENTS` list). All three share
+`resolveProjectPath`/a `resolveConfinedFilePath` prefix-check with the
+document-upload route — never trust a client-supplied relative path without
+resolving + prefix-checking it against the project root first.
+
+`POST /api/v1/tasks/:id/clear-run` (`clear_task_run` command,
+`handleClearTaskRun` in `engine.ts`) stops any active run for the task, then
+deletes its SSSF session — both the files at
+`<project>/adws/adw_data/sessions/<task.id>/` (findings, envelopes, each
+agent's `pi_sessions/*.jsonl` transcript) and, best-effort, that `adw_id`'s
+rows across `sessions`/`phases`/`events`/`envelopes`/`gate_results`/
+`agent_sessions`/`processes` in the project's `sssf.db`. Both halves matter:
+`--adw-id` is create-or-continue (see `runtime.ts`), so deleting only the
+files would still leave a resumable session keyed by rows in the db.
+`trace.ts`'s own `TraceDb` connection stays strictly `readOnly: true` (see
+above) — this opens its own short-lived writable `DatabaseSync` connection
+purely to delete one task's own rows, wrapped in try/catch so a locked or
+schema-mismatched db degrades to "at least the session files are gone"
+rather than failing the whole clear.
 
 ### Testing
 `server/tests/*.test.ts` (vitest): `engine.test.ts` (core command handlers),

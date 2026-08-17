@@ -700,6 +700,66 @@ export class BoardServer {
       }
     });
 
+    // Which agents a workflow actually uses lives nowhere structured — it's
+    // baked into the script's own Python. Every real multi-phase SSSF ADW
+    // (anything beyond the single-agent adw_prompt.py) declares a top-level
+    // `REQUIRED_AGENTS = ["planner", "builder"]` list right after its
+    // imports (see adw_modules.agents.validate(cfg, REQUIRED_AGENTS)) — this
+    // is a load-bearing, consistently-used convention across SSSF's own
+    // generated workflows, not a guess. Best-effort regex extraction, read
+    // via the same file-reading path as the generic file editor; a script
+    // that doesn't follow the convention just yields an empty list rather
+    // than an error.
+    function extractRequiredAgents(scriptSource: string): string[] {
+      const match = scriptSource.match(/^\s*REQUIRED_AGENTS\s*=\s*\[([^\]]*)\]/m);
+      if (!match) return [];
+      const names: string[] = [];
+      const strRe = /['"]([^'"]+)['"]/g;
+      let m: RegExpExecArray | null;
+      while ((m = strRe.exec(match[1])) !== null) {
+        names.push(m[1]);
+      }
+      return names;
+    }
+
+    this.app.get('/api/v1/projects/:id/adw-agents', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const adws = resolved.project.adws || [];
+        const data: Record<string, string[]> = {};
+        for (const adw of adws) {
+          if (!adw.id || !adw.path) continue;
+          const pathResolved = resolveConfinedFilePath(resolved.projectPath, adw.path);
+          if ('error' in pathResolved) {
+            data[adw.id] = [];
+            continue;
+          }
+          try {
+            if (!fs.existsSync(pathResolved.filePath)) {
+              data[adw.id] = [];
+              continue;
+            }
+            const stat = await fs.promises.stat(pathResolved.filePath);
+            if (!stat.isFile() || stat.size > MAX_EDITABLE_FILE_BYTES) {
+              data[adw.id] = [];
+              continue;
+            }
+            const content = await fs.promises.readFile(pathResolved.filePath, 'utf-8');
+            data[adw.id] = extractRequiredAgents(content);
+          } catch {
+            data[adw.id] = [];
+          }
+        }
+        res.json({ success: true, data });
+      } catch (err) {
+        next(err);
+      }
+    });
+
     this.app.delete('/api/v1/projects/:id', async (req: Request, res: Response, next: NextFunction) => {
       try {
         const result = await this.engine.executeCommand({
@@ -727,6 +787,18 @@ export class BoardServer {
       try {
         const result = await this.engine.executeCommand({ type: 'stop_task', payload: { id: req.params.id } });
         res.json(result);
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    // Stops any active run and deletes this task's SSSF session (files +
+    // best-effort trace-db rows), so the next "start" begins a genuinely
+    // fresh pi session instead of resuming the old one.
+    this.app.post('/api/v1/tasks/:id/clear-run', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const result = await this.engine.executeCommand({ type: 'clear_task_run', payload: { id: req.params.id } });
+        res.status(result.success ? 200 : 400).json(result);
       } catch (err) {
         next(err);
       }

@@ -1108,6 +1108,18 @@ body {
   flex-wrap: wrap;
 }
 .tr-request { font-size: 0.85rem; color: var(--text-main); max-width: 46ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tr-clear-run-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--mocha-surface0);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.tr-clear-run-btn:hover { color: var(--accent-red); border-color: var(--accent-red); }
+.tr-clear-run-btn:disabled { opacity: 0.6; cursor: default; }
 .tr-run-stats { display: inline-flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
 
 /* waterfall — scrolls independently of the phase-detail panel below it once

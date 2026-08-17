@@ -52,6 +52,32 @@
   box-shadow: 0 0 12px var(--primary-glow);
 }
 
+/*
+ * The textarea's own native caret only ever tracks unscaled text, so on a
+ * header line (visually scaled via transform: scale() below) it drifts off
+ * from the visible glyphs the further into the line you go. markdown-
+ * editor.js hides the native caret with caret-color: transparent whenever
+ * the real caret sits on a header line and positions this one — computed
+ * arithmetically from column * charWidth * levelScale, since both layers
+ * share one monospace font — to match where the scaled text actually is.
+ */
+.mde-synthetic-caret {
+  position: absolute;
+  width: 2px;
+  background: var(--text-main);
+  pointer-events: none;
+  animation: mde-caret-blink 1s step-end infinite;
+}
+
+.mde-synthetic-caret.hidden {
+  display: none;
+}
+
+@keyframes mde-caret-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
 .mde-header-mark {
   color: var(--text-dim);
 }

@@ -9,6 +9,37 @@
 // Public API: AgenticTrace.open(taskId, title), AgenticTrace.close()
 
 const AgenticTrace = (() => {
+  // navigator.clipboard.writeText requires a "secure context" (HTTPS, or
+  // literally localhost) — it's silently undefined when the board is
+  // reached over plain HTTP via a LAN/Tailscale IP, which is a normal way
+  // to use this app. Fall back to the legacy execCommand('copy') path via a
+  // temporary offscreen textarea, which works in that case; only reject if
+  // both approaches fail, so the caller can tell the user honestly instead
+  // of claiming success.
+  function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    return new Promise((resolve, reject) => {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        if (ok) resolve(); else reject(new Error('execCommand copy failed'));
+      } catch (e) {
+        reject(e);
+      }
+    });
+  }
+
   // ── time / number formatting ────────────────────────────────────────────
   function ts(iso) {
     if (!iso) return NaN;
@@ -629,6 +660,7 @@ const AgenticTrace = (() => {
           ${statChipHtml('read', state.usage.read)}
           ${statChipHtml('written', state.usage.written)}
         </span>
+        <button type="button" class="tr-clear-run-btn" data-action="clear-run" title="Stop any active run and delete this task's session data, so the next start begins a genuinely fresh pi session instead of resuming">clear run</button>
       </div>`;
   }
 
@@ -1090,18 +1122,38 @@ const AgenticTrace = (() => {
       render();
     } else if (action === 'copy-pi-command') {
       const cmd = `pi --session-id ${el.dataset.sessionId} --session-dir "${el.dataset.sessionDir}"`;
-      const done = () => {
+      const done = (ok) => {
         const prev = el.textContent;
-        el.textContent = 'copied!';
+        el.textContent = ok ? 'copied!' : 'copy failed — select & copy manually';
         setTimeout(() => {
           el.textContent = prev;
-        }, 1200);
+        }, ok ? 1200 : 2200);
       };
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(cmd).then(done).catch(done);
-      } else {
-        done();
+      copyTextToClipboard(cmd).then(() => done(true)).catch(() => done(false));
+    } else if (action === 'clear-run') {
+      if (!confirm('Clear this task\'s run history? This stops any active run and deletes its session data (findings, prompts, pi session transcripts) so the next start begins fresh — this cannot be undone.')) {
+        return;
       }
+      void clearRun(el);
+    }
+  }
+
+  async function clearRun(triggerEl) {
+    if (triggerEl) {
+      triggerEl.disabled = true;
+      triggerEl.textContent = 'clearing…';
+    }
+    try {
+      await apiCall(`/api/v1/tasks/${state.taskId}/clear-run`, 'POST');
+      const taskId = state.taskId;
+      if (state.timer) clearInterval(state.timer);
+      resetState(taskId);
+      render();
+      await tick();
+      state.timer = setInterval(() => void tick(), 1500);
+    } catch (e) {
+      state.error = (e && e.message) || 'failed to clear run';
+      render();
     }
   }
 

@@ -41,6 +41,12 @@ const ProjectView = (() => {
   let newAgentDraft = null; // { name } while the "+ new agent role" inline form is open
   let agentPickerCleanups = [];
 
+  // Which agents a workflow actually runs isn't metadata anywhere — it's
+  // baked into the script's own code as a top-level `REQUIRED_AGENTS = [...]`
+  // list (SSSF's own convention; see server/index.ts's extractRequiredAgents
+  // for why this is a reliable signal, not a guess). Keyed by adw.id.
+  let adwAgentsMap = {};
+
   const THINKING_LEVELS = ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
   let fetchedProjectsCache = null;
@@ -658,6 +664,18 @@ const ProjectView = (() => {
     }
   }
 
+  async function loadAdwAgents() {
+    adwAgentsMap = {};
+    try {
+      const data = await apiCallLocal(`/api/v1/projects/${encodeURIComponent(currentProjectId)}/adw-agents`);
+      if (data && typeof data === 'object') adwAgentsMap = data;
+    } catch (e) {
+      // Best-effort — a workflow just shows no parsed agents rather than
+      // blocking the rest of the project view on this.
+      console.error('ProjectView: failed to load per-workflow REQUIRED_AGENTS', e);
+    }
+  }
+
   function collectReferencedAgentNames() {
     const names = [];
     const seen = new Set();
@@ -665,6 +683,12 @@ const ProjectView = (() => {
       (adw.parameters || []).forEach((p) => {
         if (!p || p.type !== 'agent') return;
         const name = (p.default != null ? String(p.default) : '').trim();
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          names.push(name);
+        }
+      });
+      (adwAgentsMap[adw.id] || []).forEach((name) => {
         if (name && !seen.has(name)) {
           seen.add(name);
           names.push(name);
@@ -722,22 +746,32 @@ const ProjectView = (() => {
     delBtn.className = 'pv-icon-btn';
     delBtn.title = 'remove from roster';
     delBtn.textContent = '✕';
-    delBtn.addEventListener('click', () => {
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation(); // don't also toggle the header's expand/collapse
       if (!confirm(`Remove "${agent.name}" from the agent roster? This isn't written to sssf.config.yaml until you click "save agent roster".`)) return;
       const i = agentsDraft.indexOf(agent);
       if (i >= 0) agentsDraft.splice(i, 1);
       markAgentsDirty();
       renderAgentsSection();
     });
+    const caret = document.createElement('span');
+    caret.className = 'pv-adw-caret';
+    caret.textContent = '▸';
     header.appendChild(nameEl);
     header.appendChild(delBtn);
+    header.appendChild(caret);
+    header.addEventListener('click', () => card.classList.toggle('pv-expanded'));
     card.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'pv-agent-card-body';
+    card.appendChild(body);
 
     const purposeInput = mkTextInput(agent.purpose || '', 'purpose (one sentence)', (v) => {
       if (v) agent.purpose = v; else delete agent.purpose;
       markAgentsDirty();
     });
-    card.appendChild(mkFormGroup('purpose', purposeInput));
+    body.appendChild(mkFormGroup('purpose', purposeInput));
 
     const row = document.createElement('div');
     row.className = 'form-row';
@@ -781,17 +815,17 @@ const ProjectView = (() => {
     colorRow.appendChild(colorInput);
     row.appendChild(mkFormGroup('color', colorRow, 'flex-1'));
 
-    card.appendChild(row);
+    body.appendChild(row);
 
     const toolsRow = document.createElement('div');
     toolsRow.className = 'form-row';
     toolsRow.appendChild(mkFormGroup('tools', renderToolsList(agent.tools), 'flex-1'));
     toolsRow.appendChild(mkFormGroup('writes', renderToolsList(agent.writes, 'tag-badge'), 'flex-1'));
-    card.appendChild(toolsRow);
+    body.appendChild(toolsRow);
     const toolsNote = document.createElement('div');
     toolsNote.className = 'pv-agent-readonly-note';
     toolsNote.textContent = 'tools / writes / harness_engineering are read-only here — edit sssf.config.yaml directly for those.';
-    card.appendChild(toolsNote);
+    body.appendChild(toolsNote);
 
     const promptsRow = document.createElement('div');
     promptsRow.className = 'pv-agent-prompts-row';
@@ -799,7 +833,7 @@ const ProjectView = (() => {
     const usrPath = agent.prompt_engineering && agent.prompt_engineering.user;
     promptsRow.appendChild(createFileEditor(() => sysPath, 'system prompt'));
     promptsRow.appendChild(createFileEditor(() => usrPath, 'user prompt'));
-    card.appendChild(promptsRow);
+    body.appendChild(promptsRow);
 
     return card;
   }
@@ -820,6 +854,7 @@ const ProjectView = (() => {
       agentsDraft.push({ name, purpose: '' });
       markAgentsDirty();
       renderAgentsSection();
+      focusAgentCardById(name);
     });
     row.appendChild(label);
     row.appendChild(tag);
@@ -870,6 +905,7 @@ const ProjectView = (() => {
       newAgentDraft = null;
       markAgentsDirty();
       renderAgentsSection();
+      focusAgentCardById(name);
     });
     footer.appendChild(addBtn);
     footer.appendChild(statusEl);
@@ -983,7 +1019,8 @@ const ProjectView = (() => {
       onSelectAdw: (adwId) => { switchAdwView('list'); focusAdwCardById(adwId); },
       onSelectAgent: (name) => { focusAgentCardById(name); },
       onAddWorkflow: () => addNewWorkflow(),
-      onAddAgent: () => addNewAgentDraft()
+      onAddAgent: () => addNewAgentDraft(),
+      requiredAgentsByAdwId: adwAgentsMap
     });
   }
 
@@ -1008,6 +1045,7 @@ const ProjectView = (() => {
     if (!listEl) return;
     const card = Array.from(listEl.querySelectorAll('.pv-agent-card')).find((c) => c.dataset.agentId === name);
     if (!card) return;
+    card.classList.add('pv-expanded');
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     flashCard(card);
   }
@@ -1102,6 +1140,15 @@ const ProjectView = (() => {
     const pathInput = mkTextInput(adw.path, 'e.g. adws/build_feature.py', (v) => { adw.path = v; markDirty(); });
     body.appendChild(mkFormGroup('script path (within project)', pathInput));
     body.appendChild(createFileEditor(() => adw.path, 'script'));
+
+    // Read-only: which agents this workflow actually runs isn't editable
+    // metadata, it's baked into the script's own REQUIRED_AGENTS list —
+    // "show script" above is how you'd change it.
+    const requiredAgents = adwAgentsMap[adw.id] || [];
+    if (requiredAgents.length) {
+      const agentsUsedGroup = mkFormGroup('agents used (parsed from REQUIRED_AGENTS)', renderToolsList(requiredAgents));
+      body.appendChild(agentsUsedGroup);
+    }
 
     const modelGroup = document.createElement('div');
     modelGroup.className = 'form-group';
@@ -1398,6 +1445,7 @@ const ProjectView = (() => {
     currentProjectId = projectId;
     newAgentDraft = null;
     agentsDirty = false;
+    adwAgentsMap = {};
     switchAdwView('list');
     const banner = document.getElementById('pv-save-banner');
     if (banner) banner.innerHTML = '';
@@ -1427,8 +1475,11 @@ const ProjectView = (() => {
     dirty = false;
 
     renderMeta(currentDraft);
+    // adw-agents (each workflow's own REQUIRED_AGENTS) is needed before the
+    // ADW list itself renders — its cards display those parsed names — so
+    // both fetches happen before either render, not interleaved.
+    await Promise.all([loadSssfConfig(), loadAdwAgents()]);
     renderAdwList();
-    await loadSssfConfig();
     renderAgentsSection();
     modal.classList.remove('hidden');
   }

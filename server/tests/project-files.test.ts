@@ -251,4 +251,64 @@ describe('Project file editing (workflow scripts, prompt files, sssf.config.yaml
       expect(res.json.success).toBe(false);
     });
   });
+
+  describe('GET /api/v1/projects/:id/adw-agents', () => {
+    // Which agents a workflow uses lives nowhere structured — every real
+    // multi-phase SSSF workflow declares it as a top-level
+    // `REQUIRED_AGENTS = [...]` list right after its imports (validated via
+    // adw_modules.agents.validate(cfg, REQUIRED_AGENTS)). This mirrors that
+    // real convention rather than a synthetic fixture shape.
+    it('extracts REQUIRED_AGENTS from each workflow\'s script', async () => {
+      fs.mkdirSync(path.join(projectDir, 'adws'), { recursive: true });
+      fs.writeFileSync(
+        path.join(projectDir, 'adws', 'adw_plan_build.py'),
+        [
+          '#!/usr/bin/env -S uv run',
+          '"""ADW Plan Build — two-agent chain."""',
+          'import argparse',
+          'from adw_modules import agents, session',
+          '',
+          'REQUIRED_AGENTS = ["planner", "builder"]',
+          '',
+          'def main():',
+          '    agents.validate(cfg, REQUIRED_AGENTS)',
+          ''
+        ].join('\n')
+      );
+      fs.writeFileSync(
+        path.join(projectDir, 'adws', 'adw_scout.py'),
+        ['#!/usr/bin/env -S uv run', 'REQUIRED_AGENTS = ["scout"]', ''].join('\n')
+      );
+      fs.writeFileSync(
+        path.join(projectDir, 'adws', 'adw_prompt.py'),
+        ['#!/usr/bin/env -S uv run', '# no REQUIRED_AGENTS — takes --agent at runtime instead', ''].join('\n')
+      );
+
+      await request('POST', '/api/v1/command', {
+        type: 'update_project',
+        payload: {
+          id: 'demo',
+          adws: [
+            { id: 'plan-build', path: 'adws/adw_plan_build.py' },
+            { id: 'scout', path: 'adws/adw_scout.py' },
+            { id: 'prompt', path: 'adws/adw_prompt.py' },
+            { id: 'missing', path: 'adws/does_not_exist.py' }
+          ]
+        }
+      });
+
+      const res = await request('GET', '/api/v1/projects/demo/adw-agents');
+      expect(res.json.success).toBe(true);
+      expect(res.json.data['plan-build']).toEqual(['planner', 'builder']);
+      expect(res.json.data.scout).toEqual(['scout']);
+      expect(res.json.data.prompt).toEqual([]);
+      expect(res.json.data.missing).toEqual([]);
+    });
+
+    it('returns an empty map for a project with no adws', async () => {
+      const res = await request('GET', '/api/v1/projects/demo/adw-agents');
+      expect(res.json.success).toBe(true);
+      expect(res.json.data).toEqual({});
+    });
+  });
 });

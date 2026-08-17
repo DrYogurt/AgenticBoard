@@ -37,21 +37,45 @@ const WorkflowDiagram = (() => {
     return (id == null ? '' : String(id)).trim();
   }
 
-  // An ADW references an agent role via a `type: 'agent'` parameter whose
-  // `default` holds the Agent's id — this is exactly SSSF's own `--agent`
-  // CLI-flag convention, not a separate board-only field. Dedupe those ids
-  // across all adws, preserving first-appearance order, and count how many
-  // workflows reference each one.
-  function collectAgents(adws) {
+  // An ADW references an agent role two ways: a `type: 'agent'` parameter
+  // whose `default` holds the agent's name (SSSF's own `--agent` CLI-flag
+  // convention, for single-agent generic runners), or — far more commonly —
+  // a hard-coded `REQUIRED_AGENTS = [...]` list in the script itself for
+  // fixed multi-phase workflows. The caller parses that list server-side
+  // (it lives in the script's source, not any structured metadata) and
+  // passes it in as `requiredAgentsByAdwId`; this module just unions both
+  // sources per workflow, deduplicated, in first-appearance order.
+  function agentNamesForAdw(adw, requiredAgentsByAdwId) {
+    const names = [];
+    const seen = new Set();
+    const params = Array.isArray(adw && adw.parameters) ? adw.parameters : [];
+    params.forEach((p) => {
+      if (!p || p.type !== 'agent') return;
+      const id = normalizeAgentId(p.default);
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        names.push(id);
+      }
+    });
+    const required = (requiredAgentsByAdwId && adw && requiredAgentsByAdwId[adw.id]) || [];
+    required.forEach((raw) => {
+      const id = normalizeAgentId(raw);
+      if (id && !seen.has(id)) {
+        seen.add(id);
+        names.push(id);
+      }
+    });
+    return names;
+  }
+
+  // Dedupe agent names across all adws, preserving first-appearance order,
+  // and count how many workflows reference each one.
+  function collectAgents(adws, requiredAgentsByAdwId) {
     const order = [];
     const seen = new Set();
     const usage = new Map();
     adws.forEach((adw) => {
-      const params = Array.isArray(adw && adw.parameters) ? adw.parameters : [];
-      params.forEach((p) => {
-        if (!p || p.type !== 'agent') return;
-        const id = normalizeAgentId(p.default);
-        if (!id) return;
+      agentNamesForAdw(adw, requiredAgentsByAdwId).forEach((id) => {
         if (!seen.has(id)) {
           seen.add(id);
           order.push(id);
@@ -176,7 +200,8 @@ const WorkflowDiagram = (() => {
       return;
     }
 
-    const { names: agentNames, usage } = collectAgents(adws);
+    const requiredAgentsByAdwId = opts.requiredAgentsByAdwId || {};
+    const { names: agentNames, usage } = collectAgents(adws, requiredAgentsByAdwId);
 
     const workflowColX = CANVAS_PADDING;
     const agentColX = CANVAS_PADDING + NODE_WIDTH + COLUMN_GAP;
@@ -248,11 +273,7 @@ const WorkflowDiagram = (() => {
     adws.forEach((adw, i) => {
       const key = (adw && adw.id) ? adw.id : '__idx' + i;
       const from = workflowPositions.get(key);
-      const params = Array.isArray(adw && adw.parameters) ? adw.parameters : [];
-      params.forEach((p) => {
-        if (!p || p.type !== 'agent') return;
-        const id = normalizeAgentId(p.default);
-        if (!id) return;
+      agentNamesForAdw(adw, requiredAgentsByAdwId).forEach((id) => {
         const to = agentPositions.get(id);
         if (!to) return;
         const x1 = from.x + from.w;

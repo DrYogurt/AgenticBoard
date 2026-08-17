@@ -235,5 +235,6 @@ export function installDefaultRoutes(stub: FetchStub, payload = defaultBoardPayl
   stub.on('GET', '/api/v1/runs/active', () => ({ json: { success: true, data: [] } }));
   stub.on('GET', '/api/v1/live-agents', () => ({ json: { success: true, data: [] } }));
   stub.on('GET', /^\/api\/v1\/projects\/[^/]+\/documents$/, () => ({ json: { success: true, data: [] } }));
+  stub.on('GET', /^\/api\/v1\/projects\/[^/]+\/adw-agents$/, () => ({ json: { success: true, data: {} } }));
   return stub;
 }

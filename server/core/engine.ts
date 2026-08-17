@@ -13,8 +13,10 @@ import {
   RunHandle
 } from './types';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
 import { AdwRuntime, RunOutcome } from './runtime';
-import { openTraceDb, TraceSession } from './trace';
+import { openTraceDb, TraceSession, resolveTraceDbPath } from './trace';
 
 const MUTATION_COMMANDS = new Set([
   'create_task',
@@ -188,6 +190,8 @@ export class DeterministicEngine extends EventEmitter {
         return await this.handleStartTask(command.payload);
       case 'stop_task':
         return await this.handleStopTask(command.payload);
+      case 'clear_task_run':
+        return await this.handleClearTaskRun(command.payload);
       case 'sync_sssf':
         return await this.handleSyncSssf(command.payload);
 
@@ -509,6 +513,83 @@ export class DeterministicEngine extends EventEmitter {
     const project = task.project ? projects.find((p) => p.id === task.project) : undefined;
 
     return this.runtime.stop(payload.id, project);
+  }
+
+  /** "Clear this task's run history and restart the pi coding session."
+   *  A task's SSSF session lives entirely outside the workspace — a
+   *  directory of files at <project>/adws/adw_data/sessions/<task.id>/
+   *  (findings, envelopes, and each agent's own `pi_sessions/*.jsonl`
+   *  transcript) plus rows in the project's own sssf.db keyed by adw_id
+   *  (== task.id). Since `--adw-id` is create-or-continue (see runtime.ts),
+   *  simply clicking "start" again would resume the old pi session rather
+   *  than begin one — deleting both is what actually forces a fresh start.
+   *  Stops any active run first: you cannot safely delete files (or open a
+   *  second writable connection to sssf.db) a live process may still be
+   *  using. The db rows are best-effort — TraceDb itself stays read-only
+   *  (see trace.ts), this opens its own short-lived writable connection
+   *  purely to delete this task's own rows, and failing that still leaves
+   *  the session files cleared, which is what actually forces the next
+   *  `pi` invocation to start a new session instead of resuming. */
+  private async handleClearTaskRun(payload: { id: string }): Promise<{
+    stopped: boolean;
+    sessionCleared: boolean;
+    dbRowsCleared: boolean;
+    message: string;
+  }> {
+    if (!payload.id) throw new Error('Task ID is required');
+    const task = await this.storage.readTask(payload.id);
+    if (!task) throw new Error(`Task '${payload.id}' not found`);
+    if (!task.project) throw new Error(`Task '${task.id}' has no project assigned`);
+
+    const projects = await this.storage.readProjects();
+    const project = projects.find((p) => p.id === task.project);
+    if (!project) throw new Error(`Project '${task.project}' not found`);
+
+    const stopResult = await this.runtime.stop(payload.id, project);
+
+    const projectPath = path.resolve(project.path);
+    const dbPath = resolveTraceDbPath(projectPath);
+    const sessionsDir = path.resolve(path.dirname(dbPath), 'sessions');
+    const sessionDir = path.resolve(sessionsDir, task.id);
+
+    let sessionCleared = false;
+    if (
+      (sessionDir === sessionsDir || sessionDir.startsWith(sessionsDir + path.sep)) &&
+      fs.existsSync(sessionDir)
+    ) {
+      await fs.promises.rm(sessionDir, { recursive: true, force: true });
+      sessionCleared = true;
+    }
+
+    let dbRowsCleared = false;
+    if (fs.existsSync(dbPath)) {
+      try {
+        const { DatabaseSync } = process.getBuiltinModule('node:sqlite') as typeof import('node:sqlite');
+        const db = new DatabaseSync(dbPath);
+        try {
+          for (const table of ['gate_results', 'events', 'envelopes', 'agent_sessions', 'phases', 'processes', 'sessions']) {
+            try {
+              db.prepare(`DELETE FROM ${table} WHERE adw_id = ?`).run(task.id);
+            } catch {
+              // table doesn't exist in this SSSF version, or another writer
+              // holds the db right now — leave it, session files are already gone.
+            }
+          }
+          dbRowsCleared = true;
+        } finally {
+          db.close();
+        }
+      } catch {
+        // best-effort — see doc comment above.
+      }
+    }
+
+    return {
+      stopped: stopResult.stopped,
+      sessionCleared,
+      dbRowsCleared,
+      message: `cleared run history for task ${task.id}${stopResult.stopped ? ' (active run stopped)' : ''}`
+    };
   }
 
   /** True when a sync_sssf result made no real change — nothing created,

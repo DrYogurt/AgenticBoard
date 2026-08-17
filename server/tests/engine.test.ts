@@ -450,6 +450,69 @@ describe('DeterministicEngine Integration', () => {
     });
   });
 
+  describe('clear_task_run', () => {
+    // A task's `--adw-id` is create-or-continue (see runtime.ts), so
+    // deleting only the session *files* wouldn't be enough to force a
+    // genuinely fresh pi session on the next "start" — the sqlite rows
+    // that key a resumable session by adw_id have to go too.
+    it('deletes the session directory and this adw_id\'s db rows, leaving other adw_ids untouched', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({ type: 'create_project', payload: { id: 'ext-proj', path: projectPath } });
+      const dbPath = seedSssfDb(projectPath, [
+        { adw_id: 'aa11aa11', status: 'success', request: 'run to clear' },
+        { adw_id: 'bb22bb22', status: 'success', request: 'unrelated run' }
+      ]);
+
+      await engine.executeCommand({ type: 'sync_sssf', payload: {} });
+      const task = await engine.executeCommand({ type: 'get_task', payload: { id: 'aa11aa11' } });
+      expect(task.data.project).toBe('ext-proj');
+
+      const sessionDir = path.join(projectPath, 'adws', 'adw_data', 'sessions', 'aa11aa11');
+      fs.mkdirSync(path.join(sessionDir, 'planner', 'pi_sessions'), { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, 'planner', 'pi_sessions', 'abc.jsonl'), '{}\n');
+      const otherSessionDir = path.join(projectPath, 'adws', 'adw_data', 'sessions', 'bb22bb22');
+      fs.mkdirSync(otherSessionDir, { recursive: true });
+      fs.writeFileSync(path.join(otherSessionDir, 'marker.txt'), 'keep me');
+
+      const res = await engine.executeCommand({ type: 'clear_task_run', payload: { id: 'aa11aa11' } });
+      expect(res.success).toBe(true);
+      expect(res.data.sessionCleared).toBe(true);
+      expect(res.data.dbRowsCleared).toBe(true);
+
+      expect(fs.existsSync(sessionDir)).toBe(false);
+      expect(fs.existsSync(otherSessionDir)).toBe(true);
+
+      const db = new DatabaseSync(dbPath);
+      try {
+        const remaining = db.prepare('SELECT adw_id FROM sessions').all() as { adw_id: string }[];
+        expect(remaining.map((r) => r.adw_id)).toEqual(['bb22bb22']);
+      } finally {
+        db.close();
+      }
+    });
+
+    it('is a no-op success when the task has no session on disk yet', async () => {
+      const projectPath = path.join(tmpDir, 'external-project');
+      fs.mkdirSync(projectPath, { recursive: true });
+      await engine.executeCommand({ type: 'create_project', payload: { id: 'ext-proj', path: projectPath, adws: [{ id: 'plan-build', path: 'adws/adw_plan_build.py' }] } });
+      const createRes = await engine.executeCommand({
+        type: 'create_task',
+        payload: { name: 'Fresh task', project: 'ext-proj', adw: 'plan-build' }
+      });
+
+      const res = await engine.executeCommand({ type: 'clear_task_run', payload: { id: createRes.data.id } });
+      expect(res.success).toBe(true);
+      expect(res.data.stopped).toBe(false);
+      expect(res.data.sessionCleared).toBe(false);
+    });
+
+    it('rejects a nonexistent task', async () => {
+      const res = await engine.executeCommand({ type: 'clear_task_run', payload: { id: 'does-not-exist' } });
+      expect(res.success).toBe(false);
+    });
+  });
+
   describe('outcomeToColumn / mapSessionStatusToColumn (pure helpers)', () => {
     it('maps run outcomes to their target column, or null for a deliberate stop', () => {
       const outcomeToColumn = (DeterministicEngine as any).outcomeToColumn;
