@@ -27,6 +27,12 @@
         "properties": {
           "id": { "type": "string" },
           "path": { "type": "string" },
+          "name": { "type": "string" },
+          "model": { "type": "string" },
+          "agents": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
           "parameters": {
             "type": "array",
             "items": {

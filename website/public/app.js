@@ -71,7 +71,15 @@ const dom = {
 
   // Containers inside modals
   projectsContainer: document.getElementById('projects-container'),
+  projectSearchInput: document.getElementById('project-search-input'),
   extensionsContainer: document.getElementById('extensions-container'),
+
+  // Document upload (task modal)
+  docUploadBox: document.getElementById('doc-upload-box'),
+  docUploadInput: document.getElementById('doc-upload-input'),
+  docUploadTarget: document.getElementById('doc-upload-target'),
+  docUploadStatus: document.getElementById('doc-upload-status'),
+  docList: document.getElementById('doc-list'),
 
   // Workflow trace (task modal + preview drawer)
   taskWorkflowSection: document.getElementById('task-workflow-section'),
@@ -353,7 +361,7 @@ let lastRenderedStateHash = '';
 let lastActivityFetchTime = 0;
 
 function isAnyModalOpen() {
-  const modalIds = ['modal-task', 'modal-column', 'modal-projects', 'modal-extensions'];
+  const modalIds = ['modal-task', 'modal-column', 'modal-projects', 'modal-extensions', 'modal-project-view'];
   return modalIds.some((id) => {
     const el = document.getElementById(id);
     return el && !el.classList.contains('hidden');
@@ -753,10 +761,24 @@ function renderProjectsList() {
     dom.projectsContainer.innerHTML = '<p style="color: var(--text-dim);">No projects registered yet.</p>';
     return;
   }
-  state.projects.forEach((p) => {
+
+  const query = (dom.projectSearchInput ? dom.projectSearchInput.value : '').trim().toLowerCase();
+  const visible = query
+    ? state.projects.filter((p) =>
+        [p.name || '', p.id || '', p.path || ''].some((field) => field.toLowerCase().includes(query))
+      )
+    : state.projects;
+
+  if (visible.length === 0) {
+    dom.projectsContainer.innerHTML = `<p style="color: var(--text-dim);">No projects match "${escapeHTML(query)}".</p>`;
+    return;
+  }
+
+  visible.forEach((p) => {
     const adwSummary = (p.adws || []).map((a) => a.id).join(', ');
     const div = document.createElement('div');
-    div.className = 'item-card-row';
+    div.className = 'item-card-row project-row';
+    div.dataset.projectId = p.id;
     div.innerHTML = `
       <div>
         <strong>${escapeHTML(p.name || p.id)}</strong> <span style="font-size: 0.75rem; color: var(--accent-cyan); font-family: var(--font-mono);">[prefix: ${escapeHTML(p.id)}]</span>
@@ -766,6 +788,89 @@ function renderProjectsList() {
     `;
     dom.projectsContainer.appendChild(div);
   });
+
+  if (window.ProjectView) window.ProjectView.bindProjectRows(dom.projectsContainer);
+}
+
+// --- Document Upload (task modal) ---
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function setDocUploadStatus(message, kind = '') {
+  if (!dom.docUploadStatus) return;
+  dom.docUploadStatus.textContent = message;
+  dom.docUploadStatus.className = `doc-upload-status ${kind}`.trim();
+}
+
+function currentDocProjectId() {
+  return dom.taskProjectInput ? dom.taskProjectInput.value : '';
+}
+
+function renderDocList(docs) {
+  if (!dom.docList) return;
+  dom.docList.innerHTML = '';
+  docs.forEach((d) => {
+    const row = document.createElement('div');
+    row.className = 'doc-list-item';
+    const name = document.createElement('span');
+    name.textContent = d.filename;
+    const size = document.createElement('span');
+    size.className = 'doc-size';
+    size.textContent = formatFileSize(d.size || 0);
+    row.appendChild(name);
+    row.appendChild(size);
+    dom.docList.appendChild(row);
+  });
+}
+
+async function refreshDocList() {
+  if (!dom.docList) return;
+  const projectId = currentDocProjectId();
+  if (dom.docUploadTarget) {
+    dom.docUploadTarget.textContent = projectId ? `→ ${projectId}/documents` : '';
+  }
+  if (!projectId) {
+    renderDocList([]);
+    return;
+  }
+  try {
+    const docs = await apiCall(`/api/v1/projects/${encodeURIComponent(projectId)}/documents`);
+    renderDocList(Array.isArray(docs) ? docs : []);
+  } catch (err) {
+    renderDocList([]);
+  }
+}
+
+async function uploadDocuments(files) {
+  if (!files || files.length === 0) return;
+  const projectId = currentDocProjectId();
+  if (!projectId) {
+    setDocUploadStatus('select a project first', 'error');
+    return;
+  }
+
+  const form = new FormData();
+  Array.from(files).forEach((f) => form.append('files', f));
+
+  setDocUploadStatus(`uploading ${files.length} file(s)…`);
+  try {
+    // Raw fetch, not apiCall — FormData must keep its multipart boundary.
+    const res = await fetch(`/api/v1/projects/${encodeURIComponent(projectId)}/documents`, {
+      method: 'POST',
+      body: form
+    });
+    const data = await res.json();
+    if (!res.ok || data.success === false) throw new Error(data.error || `HTTP ${res.status}`);
+    const stored = data.data || [];
+    setDocUploadStatus(`uploaded ${stored.length} file(s)`, 'success');
+    await refreshDocList();
+  } catch (err) {
+    setDocUploadStatus(err.message || 'upload failed', 'error');
+  }
+  if (dom.docUploadInput) dom.docUploadInput.value = '';
 }
 
 function renderKanbanColumns() {
@@ -1128,6 +1233,14 @@ function openTaskModal(task = null) {
     stopTaskTracePolling();
   }
 
+  setDocUploadStatus('');
+  refreshDocList();
+  if (window.MarkdownEditor) {
+    window.MarkdownEditor.attach(dom.taskDescInput);
+    // .value was assigned programmatically above, which fires no input event.
+    window.MarkdownEditor.refresh(dom.taskDescInput);
+  }
+
   dom.modalTask.classList.remove('hidden');
   dom.taskTitleInput.focus();
 }
@@ -1181,6 +1294,38 @@ function setupEventListeners() {
   if (dom.taskProjectInput) {
     dom.taskProjectInput.addEventListener('change', () => {
       updateAdwSelectForProject(dom.taskProjectInput.value);
+      setDocUploadStatus('');
+      refreshDocList();
+    });
+  }
+
+  if (dom.docUploadInput) {
+    dom.docUploadInput.addEventListener('change', () => {
+      uploadDocuments(dom.docUploadInput.files);
+    });
+  }
+
+  if (dom.docUploadBox) {
+    ['dragenter', 'dragover'].forEach((evt) => {
+      dom.docUploadBox.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dom.docUploadBox.classList.add('dragover');
+      });
+    });
+    ['dragleave', 'drop'].forEach((evt) => {
+      dom.docUploadBox.addEventListener(evt, (e) => {
+        e.preventDefault();
+        dom.docUploadBox.classList.remove('dragover');
+      });
+    });
+    dom.docUploadBox.addEventListener('drop', (e) => {
+      if (e.dataTransfer && e.dataTransfer.files) uploadDocuments(e.dataTransfer.files);
+    });
+  }
+
+  if (dom.projectSearchInput) {
+    dom.projectSearchInput.addEventListener('input', () => {
+      renderProjectsList();
     });
   }
 
