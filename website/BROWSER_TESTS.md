@@ -12,6 +12,22 @@ should show up in the other:
 Check IDs (`EX-1`, `WF-3`, …) are shared between this document and the test
 names. When you change a feature, update both sides.
 
+### What the code suite cannot cover
+
+These checks only exist here, so a browser pass is the only thing that
+verifies them. Don't read a green test run as covering them:
+
+| Check | Why it needs a browser |
+| --- | --- |
+| `EX-5` | Real HTML5 drag-and-drop sequencing and reload persistence. |
+| `MD-5` | jsdom has no layout engine, so caret/pixel alignment can't be measured. The suite substitutes a structural proxy (one source line renders as exactly one output line). |
+| `DU-5` | Synthesizing a genuine file drop. |
+| `WF-11`, `WF-13` | Covered structurally, but the real degraded/conflict UX is worth seeing. |
+
+`DU-8` and `DU-9` are deliberately server-side checks — the dedup and
+path-sanitizing logic lives in the upload handler, so they're asserted in
+`server/tests/features.test.ts`, not the DOM suite.
+
 ---
 
 ## 0. Setup

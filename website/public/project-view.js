@@ -7,7 +7,7 @@
 // sends the whole adws array via the generic /api/v1/command endpoint
 // (update_project).
 //
-// Public API: window.ProjectView = { open, filterProjects, bindProjectRows, refresh }
+// Public API: window.ProjectView = { open, bindProjectRows, refresh }
 
 const ProjectView = (() => {
   let modal = null;
@@ -789,30 +789,6 @@ const ProjectView = (() => {
     return p ? p.id : null;
   }
 
-  function projectMatchesQuery(proj, q) {
-    if (!q) return true;
-    const idMatch = (proj.id || '').toLowerCase().startsWith(q);
-    const hay = `${proj.name || ''} ${proj.path || ''}`.toLowerCase();
-    return idMatch || hay.includes(q);
-  }
-
-  async function filterProjects(query) {
-    const projects = await getProjectsList();
-    const q = (query || '').trim().toLowerCase();
-    const matches = projects.filter((p) => projectMatchesQuery(p, q));
-
-    const container = document.getElementById('projects-container');
-    if (container) {
-      const rows = Array.from(container.querySelectorAll('.item-card-row'));
-      rows.forEach((row, i) => {
-        const pid = getRowProjectId(row, i, projects);
-        const proj = projects.find((p) => p.id === pid) || projects[i];
-        row.style.display = (!proj || projectMatchesQuery(proj, q)) ? '' : 'none';
-      });
-    }
-    return matches;
-  }
-
   function bindProjectRows(containerEl) {
     if (!containerEl || containerEl._pvBound) return;
     containerEl._pvBound = true;
@@ -831,7 +807,7 @@ const ProjectView = (() => {
     fetchedProjectsCache = null;
   }
 
-  return { open, filterProjects, bindProjectRows, refresh };
+  return { open, bindProjectRows, refresh };
 })();
 
 window.ProjectView = ProjectView;
