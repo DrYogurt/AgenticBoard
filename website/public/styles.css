@@ -1300,3 +1300,90 @@ body {
     font-size: 1.3rem !important;
   }
 }
+
+.project-row {
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.project-row:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-glow);
+}
+
+/* --- Document Upload (task modal) --- */
+.doc-upload-box {
+  position: relative;
+  border: 1px dashed var(--mocha-surface2);
+  border-radius: var(--radius-md);
+  background: var(--mocha-surface0);
+  padding: 14px 10px;
+  text-align: center;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.doc-upload-box.dragover {
+  border-color: var(--primary);
+  background: var(--bg-card-hover);
+}
+
+.doc-upload-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.doc-upload-hint {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+.doc-upload-link {
+  color: var(--primary);
+  text-decoration: underline;
+}
+
+.doc-upload-target {
+  margin-top: 3px;
+  font-size: 0.7rem;
+  color: var(--accent-cyan);
+}
+
+.doc-upload-status {
+  font-size: 0.72rem;
+  min-height: 1em;
+}
+
+.doc-upload-status.error {
+  color: var(--accent-red);
+}
+
+.doc-upload-status.success {
+  color: var(--accent-green);
+}
+
+.doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.doc-list-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  background: var(--mocha-surface0);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+}
+
+.doc-list-item .doc-size {
+  color: var(--text-dim);
+  flex-shrink: 0;
+}

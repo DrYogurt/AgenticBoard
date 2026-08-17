@@ -1,8 +1,20 @@
 export type TaskStatus = string;
 
+export interface ADWParameter {
+  name: string;
+  flag: string;
+  type: 'string' | 'number' | 'boolean';
+  label?: string;
+  default?: string | number | boolean;
+}
+
 export interface ADW {
   id: string;
   path: string;
+  name?: string;
+  model?: string;
+  agents?: string[];
+  parameters?: ADWParameter[];
 }
 
 export interface Task {
@@ -15,6 +27,8 @@ export interface Task {
    *  there's nothing for start_task to run. */
   adw?: string;
   description?: string;
+  /** Values for the chosen ADW's declared `parameters[]`, keyed by name. */
+  parameter_values?: Record<string, string | number | boolean>;
   created_at?: string;
   updated_at?: string;
 }

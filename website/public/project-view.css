@@ -1,0 +1,318 @@
+/* ── Project View / Workflow (ADW) Editor ───────────────────────────────
+   Every rule below is namespaced `.pv-` so it can't collide with the rest
+   of the site's stylesheet. */
+
+#modal-project-view .modal-body {
+  max-height: 74vh;
+  overflow-y: auto;
+}
+
+#projects-container .item-card-row {
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+#projects-container .item-card-row:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-glow);
+}
+
+.pv-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.pv-meta-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pv-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.pv-path {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.pv-agent-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.pv-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.pv-section-header h4 {
+  font-size: 0.8rem;
+  text-transform: lowercase;
+  color: var(--text-muted);
+}
+
+.pv-adw-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pv-adw-card {
+  background: var(--mocha-surface0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pv-adw-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  cursor: pointer;
+  gap: 8px;
+}
+
+.pv-adw-card-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.pv-adw-card-title strong {
+  color: var(--text-main);
+  font-size: 0.85rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pv-adw-card-title .pv-adw-id-tag {
+  font-size: 0.68rem;
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.pv-adw-caret {
+  color: var(--text-dim);
+  transition: transform var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.pv-adw-card.pv-expanded .pv-adw-caret {
+  transform: rotate(90deg);
+}
+
+.pv-adw-card-body {
+  display: none;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pv-adw-card.pv-expanded .pv-adw-card-body {
+  display: flex;
+}
+
+.pv-warning {
+  font-size: 0.7rem;
+  color: var(--accent-yellow);
+  background: rgba(249, 226, 175, 0.1);
+  border: 1px solid rgba(249, 226, 175, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+}
+
+.pv-agents-list,
+.pv-params-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pv-agent-row,
+.pv-param-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.pv-param-row .form-input {
+  font-size: 0.72rem;
+  padding: 5px 8px;
+}
+
+.pv-param-type-select {
+  max-width: 110px;
+}
+
+.pv-icon-btn {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: var(--transition-fast);
+}
+
+.pv-icon-btn:hover {
+  color: var(--accent-red);
+  border-color: var(--accent-red);
+}
+
+.pv-small-btn {
+  font-size: 0.7rem;
+  padding: 4px 10px;
+}
+
+.pv-empty {
+  color: var(--text-dim);
+  font-size: 0.78rem;
+  padding: 8px 0;
+}
+
+/* ── Model Picker ─────────────────────────────────────────────────────── */
+.pv-model-picker {
+  position: relative;
+}
+
+.pv-model-picker-selected {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: text;
+}
+
+.pv-model-picker-selected .form-input {
+  cursor: text;
+}
+
+.pv-model-clear-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.85rem;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+
+.pv-model-clear-btn:hover {
+  color: var(--accent-red);
+}
+
+.pv-model-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: var(--mocha-crust);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.pv-model-dropdown.hidden {
+  display: none;
+}
+
+.pv-model-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.76rem;
+}
+
+.pv-model-option:hover,
+.pv-model-option.pv-active {
+  background: var(--mocha-surface0);
+}
+
+.pv-model-provider-badge {
+  font-size: 0.62rem;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: rgba(137, 180, 250, 0.15);
+  color: var(--accent-blue);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.pv-model-name {
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-model-dropdown-hint,
+.pv-model-dropdown-empty,
+.pv-model-dropdown-note {
+  padding: 6px 10px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.pv-model-dropdown-note {
+  border-top: 1px solid var(--border-subtle);
+  color: var(--accent-yellow);
+}
+
+/* ── Save status banner ──────────────────────────────────────────────── */
+.pv-save-banner {
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  font-size: 0.78rem;
+  margin-top: 8px;
+}
+
+.pv-save-banner.pv-ok {
+  border: 1px solid rgba(166, 227, 161, 0.4);
+  background: rgba(166, 227, 161, 0.1);
+  color: var(--accent-green);
+}
+
+.pv-save-banner.pv-err {
+  border: 1px solid rgba(243, 139, 168, 0.45);
+  background: rgba(243, 139, 168, 0.09);
+  color: var(--accent-red);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.pv-search-unavailable {
+  padding: 30px 10px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}

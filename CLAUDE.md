@@ -100,6 +100,34 @@ SSSF's own visualizer UI, re-themed) — opened from a task's mini trace
 preview or the "Workflow Preview" drawer. Both talk to the same REST/SSE API
 the CLI and TUI use.
 
+Two further self-contained modules attach themselves to `window` and are
+wired in from `app.js`, so each stays out of the main board file:
+- `project-view.js` (`window.ProjectView`) — the project view opened by
+  clicking a row in the projects modal. Edits each ADW's `id`, `name`,
+  `path`, `model`, `agents[]` and `parameters[]`, then saves the **whole**
+  `adws` array through the `update_project` command (there is no REST
+  shortcut for it). Its model picker is fed by `GET /api/v1/models`, which
+  shells out to `pi --list-models`; that endpoint answers 200 with an empty
+  list plus an `error` when `pi` is unavailable, so the picker degrades to
+  manual entry instead of breaking the board.
+- `markdown-editor.js` (`window.MarkdownEditor`) — markdown syntax
+  highlighting for the task description. A `<pre>` highlight layer sits
+  behind a transparent-text `<textarea>`, so the field stays a real
+  textarea whose `.value` is raw markdown. Two non-obvious constraints:
+  headers are enlarged with `transform: scale()` rather than `font-size`
+  (a font-size bump grows the line box and drifts the overlay out of
+  alignment), and both layers use `white-space: pre` with soft wrap off,
+  because a scaled header is an unbreakable `inline-block` and would
+  otherwise wrap differently from the textarea. `app.js` assigns
+  `.value` directly when opening the modal, which fires no `input` event —
+  hence the explicit `MarkdownEditor.refresh()` call there.
+
+Document upload lives in the task modal and posts `multipart/form-data` to
+`POST /api/v1/projects/:id/documents`, which stores files under the
+**project's** `documents/` directory — not the workspace. It must bypass
+`apiCall()`, which would JSON-encode the body and destroy the multipart
+boundary.
+
 ### Testing
 `server/tests/*.test.ts` (vitest): `engine.test.ts` (core command handlers),
 `validator.test.ts` (schema validation), `server.test.ts`/`web.test.ts` (HTTP

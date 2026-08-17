@@ -29,6 +29,10 @@
     "description": {
       "type": "string"
     },
+    "parameter_values": {
+      "type": "object",
+      "additionalProperties": { "type": ["string", "number", "boolean"] }
+    },
     "created_at": {
       "type": "string"
     },

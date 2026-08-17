@@ -26,7 +26,28 @@
         "required": ["id", "path"],
         "properties": {
           "id": { "type": "string" },
-          "path": { "type": "string" }
+          "path": { "type": "string" },
+          "name": { "type": "string" },
+          "model": { "type": "string" },
+          "agents": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "flag", "type"],
+              "properties": {
+                "name": { "type": "string" },
+                "flag": { "type": "string" },
+                "type": { "type": "string", "enum": ["string", "number", "boolean"] },
+                "label": { "type": "string" },
+                "default": {}
+              },
+              "additionalProperties": false
+            }
+          }
         },
         "additionalProperties": false
       }

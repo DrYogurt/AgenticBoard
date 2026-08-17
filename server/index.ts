@@ -2,9 +2,44 @@ import express, { Request, Response, NextFunction } from 'express';
 import http from 'http';
 import path from 'path';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import multer from 'multer';
 import { DeterministicEngine } from './core/engine';
 import { BoardEvent, Project, Task } from './core/types';
 import { openTraceDb } from './core/trace';
+
+export interface ModelEntry {
+  provider: string;
+  model: string;
+  context: string;
+  max_output: string;
+  thinking: boolean;
+  images: boolean;
+  id: string;
+}
+
+const MODELS_CACHE_TTL_MS = 5 * 60 * 1000;
+let modelsCache: { data: ModelEntry[]; error?: string; timestamp: number } | null = null;
+
+export function parseModelsTable(stdout: string): ModelEntry[] {
+  const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
+  const rows: ModelEntry[] = [];
+  for (const line of lines.slice(1)) {
+    const cols = line.trim().split(/\s{2,}/);
+    if (cols.length < 6) continue;
+    const [provider, model, context, max_output, thinking, images] = cols;
+    rows.push({
+      provider,
+      model,
+      context,
+      max_output,
+      thinking: thinking.toLowerCase() === 'yes',
+      images: images.toLowerCase() === 'yes',
+      id: `${provider}/${model}`
+    });
+  }
+  return rows;
+}
 
 export interface ServerOptions {
   port?: number;
@@ -258,6 +293,32 @@ export class BoardServer {
       }
     });
 
+    // `pi` model catalog for the model picker — cached in memory since spawning
+    // `pi --list-models` on every picker open is unnecessary.
+    this.app.get('/api/v1/models', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const refresh = req.query.refresh === '1';
+        if (!refresh && modelsCache && Date.now() - modelsCache.timestamp < MODELS_CACHE_TTL_MS) {
+          res.json({ success: true, data: modelsCache.data, error: modelsCache.error });
+          return;
+        }
+        execFile('pi', ['--list-models'], { timeout: 15000 }, (err, stdout) => {
+          if (err) {
+            // A missing/broken `pi` shouldn't 500 the whole board — respond 200
+            // with an empty list so the UI can show "model list unavailable".
+            modelsCache = { data: [], error: err.message, timestamp: Date.now() };
+            res.json({ success: true, data: [], error: err.message });
+            return;
+          }
+          const data = parseModelsTable(stdout);
+          modelsCache = { data, timestamp: Date.now() };
+          res.json({ success: true, data });
+        });
+      } catch (err) {
+        next(err);
+      }
+    });
+
     // Projects Shortcuts
     this.app.get('/api/v1/projects', async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -294,6 +355,107 @@ export class BoardServer {
       try {
         const result = await this.engine.executeCommand({ type: 'list_project_adws', payload: { id: req.params.id } });
         res.status(result.success ? 200 : 400).json(result);
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    const resolveProjectPath = async (id: string): Promise<{ project: Project; projectPath: string } | { error: string }> => {
+      const result = await this.engine.executeCommand<Project>({ type: 'get_project', payload: { id } });
+      if (!result.success || !result.data) {
+        return { error: result.error || `Project '${id}' not found` };
+      }
+      // Mirrors runtime.ts: project.path is used as-is / via path.resolve, never
+      // rejoined onto WORKSPACE_DIR (a project is an unrelated external repo).
+      return { project: result.data, projectPath: path.resolve(result.data.path) };
+    };
+
+    const sanitizeDocumentFilename = (original: string): string => {
+      const stripped = original.replace(/\0/g, '');
+      const base = path.basename(stripped).replace(/^\.+/, '');
+      return base || 'file';
+    };
+
+    const uniqueDocumentPath = (dir: string, filename: string): string => {
+      let candidate = path.join(dir, filename);
+      if (!fs.existsSync(candidate)) return candidate;
+      const ext = path.extname(filename);
+      const stem = filename.slice(0, filename.length - ext.length);
+      let n = 1;
+      do {
+        candidate = path.join(dir, `${stem}-${n}${ext}`);
+        n++;
+      } while (fs.existsSync(candidate));
+      return candidate;
+    };
+
+    const documentsUpload = multer({
+      storage: multer.memoryStorage(),
+      limits: { fileSize: 25 * 1024 * 1024, files: 20 }
+    });
+
+    this.app.get('/api/v1/projects/:id/documents', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const documentsDir = path.join(resolved.projectPath, 'documents');
+        if (!fs.existsSync(documentsDir)) {
+          res.json({ success: true, data: [] });
+          return;
+        }
+        const entries = await fs.promises.readdir(documentsDir, { withFileTypes: true });
+        const files = await Promise.all(
+          entries
+            .filter((e) => e.isFile())
+            .map(async (e) => {
+              const stat = await fs.promises.stat(path.join(documentsDir, e.name));
+              return { filename: e.name, size: stat.size, modified: stat.mtime.toISOString() };
+            })
+        );
+        res.json({ success: true, data: files });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    this.app.post('/api/v1/projects/:id/documents', documentsUpload.array('files', 20), async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const files = (req.files as Express.Multer.File[]) || [];
+        if (files.length === 0) {
+          res.status(400).json({ success: false, error: 'No files uploaded (expected multipart field "files")' });
+          return;
+        }
+        const documentsDir = path.join(resolved.projectPath, 'documents');
+        await fs.promises.mkdir(documentsDir, { recursive: true });
+        const resolvedDocumentsDir = path.resolve(documentsDir);
+
+        const stored: Array<{ filename: string; size: number; path: string }> = [];
+        for (const file of files) {
+          const safeName = sanitizeDocumentFilename(file.originalname);
+          const candidatePath = path.resolve(documentsDir, safeName);
+          // Defense in depth beyond basename/leading-dot stripping above — refuse
+          // to write anywhere the resolved path escapes documents/.
+          if (candidatePath !== resolvedDocumentsDir && !candidatePath.startsWith(resolvedDocumentsDir + path.sep)) {
+            res.status(400).json({ success: false, error: `Rejected unsafe filename '${file.originalname}'` });
+            return;
+          }
+          const destPath = uniqueDocumentPath(documentsDir, safeName);
+          await fs.promises.writeFile(destPath, file.buffer);
+          stored.push({
+            filename: path.basename(destPath),
+            size: file.buffer.length,
+            path: path.relative(resolved.projectPath, destPath)
+          });
+        }
+        res.status(201).json({ success: true, data: stored });
       } catch (err) {
         next(err);
       }
