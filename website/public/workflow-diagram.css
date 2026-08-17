@@ -1,0 +1,171 @@
+/* ── Workflow (ADW) Diagram View ─────────────────────────────────────────
+   Clickable UML-style box-and-line diagram of a project's workflows (adws)
+   and the agent-role names they reference. Every rule below is namespaced
+   `.wd-` so it can't collide with the rest of the site's stylesheet.
+   Reuses the same Catppuccin custom properties defined in styles.css —
+   no hardcoded colors. */
+
+.wd-root {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+/* ── scroll region ────────────────────────────────────────────────────── */
+
+.wd-scroll {
+  max-height: 60vh;
+  overflow: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--mocha-crust);
+}
+
+.wd-canvas-inner {
+  position: relative;
+}
+
+/* ── column headers (sticky within .wd-scroll) ───────────────────────── */
+
+.wd-header-row {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--mocha-crust);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.wd-column-title {
+  position: absolute;
+  top: 0;
+  padding: 8px 10px;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+/* ── canvas + edges ───────────────────────────────────────────────────── */
+
+.wd-canvas {
+  position: relative;
+}
+
+.wd-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.wd-edge {
+  stroke: var(--border-glow);
+  stroke-width: 1.5;
+}
+
+/* ── nodes ────────────────────────────────────────────────────────────── */
+
+.wd-node {
+  position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  overflow: hidden;
+  padding: 8px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.wd-node:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-glow);
+}
+
+.wd-node:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.wd-node-label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wd-node-sub {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.wd-node-workflow {
+  border-left: 3px solid var(--accent-blue);
+}
+
+.wd-node-workflow .wd-node-sub {
+  color: var(--accent-cyan);
+  font-family: var(--font-mono);
+}
+
+.wd-node-agent {
+  border-left: 3px solid var(--accent-green);
+}
+
+/* "+ new workflow" / "+ new agent role" affordance nodes */
+.wd-node-add {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background: transparent;
+  border-style: dashed;
+  color: var(--text-dim);
+}
+
+.wd-node-add:hover {
+  color: var(--primary);
+  border-color: var(--border-glow);
+  background: var(--primary-glow);
+}
+
+.wd-node-add .wd-node-label {
+  color: inherit;
+  font-weight: 500;
+  white-space: normal;
+}
+
+.wd-node-empty-note {
+  position: absolute;
+  padding: 8px 10px;
+  font-size: 0.7rem;
+  font-style: italic;
+  color: var(--text-dim);
+}
+
+/* ── empty state (0 workflows) ───────────────────────────────────────── */
+
+.wd-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 28px 14px;
+  border: 1px dashed var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--mocha-crust);
+}
+
+.wd-empty-message {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}

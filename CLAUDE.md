@@ -110,6 +110,35 @@ wired in from `app.js`, so each stays out of the main board file:
   shells out to `pi --list-models`; that endpoint answers 200 with an empty
   list plus an `error` when `pi` is unavailable, so the picker degrades to
   manual entry instead of breaking the board.
+  An ADW's `agents[]` is (deliberately) just an array of free-text name
+  strings — nothing enforces they match a real registered `Agent`. The
+  "agent roles" section at the top of the project view surfaces that gap:
+  it cross-references every name referenced by any of the project's ADWs
+  against the workspace-wide `Agent` registry (`list_agents`/
+  `register_agent`/`update_agent`/`delete_agent`, all via
+  `POST /api/v1/command` — there's no dedicated REST route), rendering a
+  full editable card (model picker, `system_prompt` textarea, `parameters[]`)
+  for names that resolve to a real `Agent`, or a "not yet configured" card
+  with a one-click promote button for names that don't. Agent edits save
+  immediately (debounced ~500ms via `update_agent`) independently of the
+  project's own save button, since `Agent` is a different backend resource
+  than the project — `update_project` has no field for it. Deleting an
+  `Agent` only removes the registry record; it never touches any ADW's
+  `agents[]` string, so a referenced-but-deleted name just reverts to
+  "not yet configured" rather than the reference disappearing.
+- `workflow-diagram.js` (`window.WorkflowDiagram`) — a standalone, stateless
+  renderer for a clickable UML-style box-and-line view of a project's `adws[]`
+  (one box per workflow) and the agent-role names they reference (one
+  deduplicated box per unique name, since the same role can be shared across
+  workflows). It never mutates data or opens anything itself — `render(el,
+  project, opts)` takes `onSelectAdw`/`onSelectAgent`/`onAddWorkflow`/
+  `onAddAgent` callbacks, and `project-view.js` owns what those do (switch to
+  the list view and expand/flash the matching card, or add a new
+  workflow/agent draft exactly like the equivalent "+" button). Positions are
+  computed arithmetically from fixed constants rather than measured via
+  `getBoundingClientRect`, so the layout is identical in a real browser and in
+  jsdom tests. `project-view.js`'s list/diagram toggle always resets to
+  "list" on open.
 - `markdown-editor.js` (`window.MarkdownEditor`) — markdown syntax
   highlighting for the task description. A `<pre>` highlight layer sits
   behind a transparent-text `<textarea>`, so the field stays a real
@@ -120,7 +149,13 @@ wired in from `app.js`, so each stays out of the main board file:
   because a scaled header is an unbreakable `inline-block` and would
   otherwise wrap differently from the textarea. `app.js` assigns
   `.value` directly when opening the modal, which fires no `input` event —
-  hence the explicit `MarkdownEditor.refresh()` call there.
+  hence the explicit `MarkdownEditor.refresh()` call there. `.mde-wrap` uses
+  `resize: both` (not just `vertical`): both the highlight `<pre>` and the
+  real `<textarea>` are `position: absolute; inset: 0` children sized off the
+  wrapper's own box, so a wider wrapper propagates to both layers with no
+  extra JS. `.modal-body` carries `overflow-x: auto` so a widened box scrolls
+  within the modal instead of being clipped by `.modal-card`'s
+  `overflow: hidden` (which stays in place for its rounded-corner clipping).
 
 Document upload lives in the task modal and posts `multipart/form-data` to
 `POST /api/v1/projects/:id/documents`, which stores files under the
