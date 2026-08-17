@@ -3,7 +3,10 @@ export type TaskStatus = string;
 export interface ADWParameter {
   name: string;
   flag: string;
-  type: 'string' | 'number' | 'boolean';
+  /** 'agent' means the flag's value is an Agent id (e.g. SSSF's own
+   *  `--agent` convention) — its default is edited via an agent picker
+   *  sourced from the Agent registry instead of free text. */
+  type: 'string' | 'number' | 'boolean' | 'agent';
   label?: string;
   default?: string | number | boolean;
 }
@@ -13,7 +16,6 @@ export interface ADW {
   path: string;
   name?: string;
   model?: string;
-  agents?: string[];
   parameters?: ADWParameter[];
 }
 

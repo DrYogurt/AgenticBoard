@@ -104,41 +104,53 @@ Two further self-contained modules attach themselves to `window` and are
 wired in from `app.js`, so each stays out of the main board file:
 - `project-view.js` (`window.ProjectView`) — the project view opened by
   clicking a row in the projects modal. Edits each ADW's `id`, `name`,
-  `path`, `model`, `agents[]` and `parameters[]`, then saves the **whole**
-  `adws` array through the `update_project` command (there is no REST
-  shortcut for it). Its model picker is fed by `GET /api/v1/models`, which
-  shells out to `pi --list-models`; that endpoint answers 200 with an empty
-  list plus an `error` when `pi` is unavailable, so the picker degrades to
-  manual entry instead of breaking the board.
-  An ADW's `agents[]` is (deliberately) just an array of free-text name
-  strings — nothing enforces they match a real registered `Agent`. The
-  "agent roles" section at the top of the project view surfaces that gap:
-  it cross-references every name referenced by any of the project's ADWs
-  against the workspace-wide `Agent` registry (`list_agents`/
-  `register_agent`/`update_agent`/`delete_agent`, all via
+  `path`, `model` and `parameters[]`, then saves the **whole** `adws` array
+  through the `update_project` command (there is no REST shortcut for it).
+  Its model picker is fed by `GET /api/v1/models`, which shells out to
+  `pi --list-models`; that endpoint answers 200 with an empty list plus an
+  `error` when `pi` is unavailable, so the picker degrades to manual entry
+  instead of breaking the board.
+  Agent selection is **just another parameter** — there is deliberately no
+  separate ADW-level "agents" field. A parameter with `type: 'agent'` means
+  its `default` is an `Agent` id; this is exactly SSSF's own `--agent`
+  CLI-flag convention (see e.g. a real `adw_prompt.py`'s `agent` parameter,
+  `default: 'builder'`), not a board-only concept — the UI unifies with it
+  rather than bolting on a parallel mechanism. Picking `type: 'agent'` in a
+  parameter row swaps its plain-text "default" input for an id-and-name
+  picker sourced from the `Agent` registry (`createAgentDefaultPicker`,
+  mirroring the model picker's UX). `renderParamsList` is shared verbatim by
+  both an ADW's own `parameters[]` and an `Agent`'s own `parameters[]` (an
+  agent role's parameters can themselves be agent-typed, for sub-agent
+  orchestration) — one function, one row-rendering path, for both owners.
+  The "agent roles" section at the top of the project view cross-references
+  every id referenced by an agent-typed parameter's `default` anywhere in
+  the project's ADWs against the workspace-wide `Agent` registry
+  (`list_agents`/`register_agent`/`update_agent`/`delete_agent`, all via
   `POST /api/v1/command` — there's no dedicated REST route), rendering a
   full editable card (model picker, `system_prompt` textarea, `parameters[]`)
-  for names that resolve to a real `Agent`, or a "not yet configured" card
-  with a one-click promote button for names that don't. Agent edits save
-  immediately (debounced ~500ms via `update_agent`) independently of the
+  for ids that resolve to a real `Agent`, or a "not yet configured" card with
+  a one-click promote button for ids that don't — promoting one registers
+  `{id, name}` as the referenced value verbatim (no slugify step: the
+  reference already **is** the id, being a raw CLI flag value). Agent edits
+  save immediately (debounced ~500ms via `update_agent`) independently of the
   project's own save button, since `Agent` is a different backend resource
   than the project — `update_project` has no field for it. Deleting an
-  `Agent` only removes the registry record; it never touches any ADW's
-  `agents[]` string, so a referenced-but-deleted name just reverts to
-  "not yet configured" rather than the reference disappearing.
+  `Agent` only removes the registry record; it never touches any parameter's
+  `default`, so a referenced-but-deleted id just reverts to "not yet
+  configured" rather than the reference disappearing.
 - `workflow-diagram.js` (`window.WorkflowDiagram`) — a standalone, stateless
   renderer for a clickable UML-style box-and-line view of a project's `adws[]`
-  (one box per workflow) and the agent-role names they reference (one
-  deduplicated box per unique name, since the same role can be shared across
-  workflows). It never mutates data or opens anything itself — `render(el,
-  project, opts)` takes `onSelectAdw`/`onSelectAgent`/`onAddWorkflow`/
-  `onAddAgent` callbacks, and `project-view.js` owns what those do (switch to
-  the list view and expand/flash the matching card, or add a new
-  workflow/agent draft exactly like the equivalent "+" button). Positions are
-  computed arithmetically from fixed constants rather than measured via
-  `getBoundingClientRect`, so the layout is identical in a real browser and in
-  jsdom tests. `project-view.js`'s list/diagram toggle always resets to
-  "list" on open.
+  (one box per workflow) and the agent ids their `type: 'agent'` parameters
+  reference (one deduplicated box per unique id, since the same role can be
+  shared across workflows). It never mutates data or opens anything itself —
+  `render(el, project, opts)` takes `onSelectAdw`/`onSelectAgent`/
+  `onAddWorkflow`/`onAddAgent` callbacks, and `project-view.js` owns what
+  those do (switch to the list view and expand/flash the matching card, or
+  add a new workflow/agent draft exactly like the equivalent "+" button).
+  Positions are computed arithmetically from fixed constants rather than
+  measured via `getBoundingClientRect`, so the layout is identical in a real
+  browser and in jsdom tests. `project-view.js`'s list/diagram toggle always
+  resets to "list" on open.
 - `markdown-editor.js` (`window.MarkdownEditor`) — markdown syntax
   highlighting for the task description. A `<pre>` highlight layer sits
   behind a transparent-text `<textarea>`, so the field stays a real

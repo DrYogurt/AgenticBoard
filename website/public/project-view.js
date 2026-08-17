@@ -2,10 +2,17 @@
 //
 // Standalone module: builds its own modal (#modal-project-view), injects it
 // into the DOM on first use, and edits a project's `adws[]` (id/name/path/
-// model/agents/parameters) with a searchable model picker fed by
-// GET /api/v1/models. Nothing is persisted until "save changes", which
-// sends the whole adws array via the generic /api/v1/command endpoint
-// (update_project).
+// model/parameters) with a searchable model picker fed by GET /api/v1/models.
+// Nothing is persisted until "save changes", which sends the whole adws array
+// via the generic /api/v1/command endpoint (update_project).
+//
+// Agent selection is just another ADW parameter: a parameter with
+// `type: 'agent'` means its `default` is an Agent id (this is exactly SSSF's
+// own `--agent` CLI-flag convention — e.g. `adw_prompt.py`'s real `agent`
+// parameter with `default: 'builder'`). There is deliberately no separate
+// ADW-level "agents" field or free-text-to-registry promotion step — the
+// parameter *is* the reference, so editing an ADW only ever means editing
+// its parameters.
 //
 // Public API: window.ProjectView = { open, bindProjectRows, refresh }
 
@@ -21,14 +28,15 @@ const ProjectView = (() => {
   let modelsLoadAttempted = false;
 
   // Agent registry (list_agents) — shared between the "Agent Roles" section
-  // and the ADW agent-name autocomplete picker (see createAgentPicker below).
+  // and any `type: 'agent'` parameter's default-value picker (see
+  // createAgentDefaultPicker below).
   let agentsCache = null;
   let agentsError = null;
   let agentsLoadAttempted = false;
-  // Agent names created via "+ new agent role" this modal session that
-  // aren't (yet) referenced by any ADW — kept visible until the modal is
+  // Agent ids created via "+ new agent role" this modal session that aren't
+  // (yet) referenced by any ADW parameter — kept visible until the modal is
   // reopened, since the registry itself has no per-project concept of them.
-  let extraAgentNames = [];
+  let extraAgentIds = [];
   // In-progress "+ new agent role" cards that haven't been registered yet.
   let pendingAgentDrafts = [];
   // Document-level listener cleanups for pickers inside the Agent Roles
@@ -348,8 +356,8 @@ const ProjectView = (() => {
     }
   }
 
-  function findAgentByName(name) {
-    return (agentsCache || []).find((a) => a.name === name) || null;
+  function findAgentById(id) {
+    return (agentsCache || []).find((a) => a.id === id) || null;
   }
 
   function slugify(str) {
@@ -368,20 +376,20 @@ const ProjectView = (() => {
 
   const AGENT_RESULT_CAP = 50;
 
-  // Autocomplete input for a single adw.agents[idx] entry — sourced from the
-  // Agent registry but still free text: an ADW may reference an agent name
-  // that has no registry entry yet (that's exactly the "not yet configured"
-  // case the Agent Roles section above handles).
-  function createAgentPicker(adw, idx, onChange) {
+  // The default-value picker for a `type: 'agent'` parameter — sourced from
+  // the Agent registry but still free text: a parameter's default may be an
+  // agent id that has no registry entry yet (that's exactly the "not yet
+  // configured" case the Agent Roles section above handles).
+  function createAgentDefaultPicker(param, onChange) {
     const wrap = document.createElement('div');
     wrap.className = 'pv-agent-name-picker flex-1';
 
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'form-input';
-    input.placeholder = 'agent name';
+    input.placeholder = 'agent id';
     input.autocomplete = 'off';
-    input.value = adw.agents[idx] || '';
+    input.value = param.default !== undefined ? String(param.default) : '';
     wrap.appendChild(input);
 
     const dropdown = document.createElement('div');
@@ -392,12 +400,14 @@ const ProjectView = (() => {
       const q = (query || '').trim().toLowerCase();
       const list = agentsCache || [];
       if (!q) return list;
-      return list.filter((a) => (a.name || '').toLowerCase().includes(q));
+      return list.filter((a) =>
+        (a.name || '').toLowerCase().includes(q) || (a.id || '').toLowerCase().includes(q)
+      );
     }
 
-    function commit(name) {
-      adw.agents[idx] = name;
-      input.value = name;
+    function commit(id) {
+      if (id) param.default = id; else delete param.default;
+      input.value = id || '';
       onChange();
     }
 
@@ -406,14 +416,14 @@ const ProjectView = (() => {
       if (agentsError) {
         const note = document.createElement('div');
         note.className = 'pv-agent-dropdown-note';
-        note.textContent = `agent registry unavailable — type a name manually (${agentsError})`;
+        note.textContent = `agent registry unavailable — type an id manually (${agentsError})`;
         dropdown.appendChild(note);
       }
       const matches = filterAgents(input.value);
       if (matches.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'pv-agent-dropdown-empty';
-        empty.textContent = (agentsCache && agentsCache.length) ? 'no matches' : 'no agents registered yet — type a new name';
+        empty.textContent = (agentsCache && agentsCache.length) ? 'no matches' : 'no agents registered yet — type a new id';
         dropdown.appendChild(empty);
         return;
       }
@@ -421,10 +431,19 @@ const ProjectView = (() => {
         const opt = document.createElement('div');
         opt.className = 'pv-agent-option';
         opt.setAttribute('role', 'option');
-        opt.textContent = a.name;
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'pv-agent-option-name';
+        nameSpan.textContent = a.name;
+        opt.appendChild(nameSpan);
+        if (a.id !== a.name) {
+          const idSpan = document.createElement('span');
+          idSpan.className = 'pv-agent-option-id';
+          idSpan.textContent = a.id;
+          opt.appendChild(idSpan);
+        }
         opt.addEventListener('mousedown', (e) => {
           e.preventDefault();
-          commit(a.name);
+          commit(a.id);
           hideDropdown();
         });
         dropdown.appendChild(opt);
@@ -443,7 +462,7 @@ const ProjectView = (() => {
     });
 
     input.addEventListener('input', () => {
-      adw.agents[idx] = input.value;
+      if (input.value) param.default = input.value; else delete param.default;
       onChange();
       if (!dropdown.classList.contains('hidden')) renderDropdown();
     });
@@ -467,98 +486,15 @@ const ProjectView = (() => {
     };
   }
 
-  // ── agents / parameters editors ─────────────────────────────────────
-
-  function renderAgentsList(adw, container) {
-    container.innerHTML = '';
-    (adw.agents || []).forEach((agentName, idx) => {
-      const row = document.createElement('div');
-      row.className = 'pv-agent-row';
-      const picker = createAgentPicker(adw, idx, markDirty);
-      pickerCleanups.push(picker.cleanup);
-      const rmBtn = document.createElement('button');
-      rmBtn.type = 'button';
-      rmBtn.className = 'pv-icon-btn';
-      rmBtn.title = 'remove agent';
-      rmBtn.textContent = '✕';
-      rmBtn.addEventListener('click', () => {
-        adw.agents.splice(idx, 1);
-        renderAgentsList(adw, container);
-        markDirty();
-      });
-      row.appendChild(picker.el);
-      row.appendChild(rmBtn);
-      container.appendChild(row);
-    });
-  }
-
-  function renderParamsList(adw, container) {
-    container.innerHTML = '';
-    (adw.parameters || []).forEach((param, idx) => {
-      const row = document.createElement('div');
-      row.className = 'pv-param-row';
-
-      const nameInput = mkTextInput(param.name || '', 'name', (v) => { param.name = v; markDirty(); }, 'flex-1');
-      const flagInput = mkTextInput(param.flag || '', 'flag (--foo)', (v) => { param.flag = v; markDirty(); }, 'flex-1');
-
-      const typeSelect = document.createElement('select');
-      typeSelect.className = 'form-input pv-param-type-select';
-      ['string', 'number', 'boolean'].forEach((t) => {
-        const opt = document.createElement('option');
-        opt.value = t;
-        opt.textContent = t;
-        if ((param.type || 'string') === t) opt.selected = true;
-        typeSelect.appendChild(opt);
-      });
-      typeSelect.addEventListener('change', () => { param.type = typeSelect.value; markDirty(); });
-
-      const labelInput = mkTextInput(param.label || '', 'label (optional)', (v) => {
-        if (v) param.label = v; else delete param.label;
-        markDirty();
-      }, 'flex-1');
-
-      const defaultInput = mkTextInput(param.default !== undefined ? String(param.default) : '', 'default (optional)', (v) => {
-        if (v === '') delete param.default; else param.default = v;
-        markDirty();
-      }, 'flex-1');
-
-      const rmBtn = document.createElement('button');
-      rmBtn.type = 'button';
-      rmBtn.className = 'pv-icon-btn';
-      rmBtn.title = 'remove parameter';
-      rmBtn.textContent = '✕';
-      rmBtn.addEventListener('click', () => {
-        const arr = adw.parameters;
-        const i = arr.indexOf(param);
-        if (i >= 0) arr.splice(i, 1);
-        renderParamsList(adw, container);
-        markDirty();
-      });
-
-      row.appendChild(nameInput);
-      row.appendChild(flagInput);
-      row.appendChild(typeSelect);
-      row.appendChild(labelInput);
-      row.appendChild(defaultInput);
-      row.appendChild(rmBtn);
-      container.appendChild(row);
-    });
-  }
-
-  // ── Agent Roles section (project-level Agent registry) ─────────────────
+  // ── parameters editor (shared by an ADW's own parameters and an Agent's) ─
   //
-  // Distinct from the ADW-level `agents: string[]` editor above: this section
-  // shows every agent name referenced by ANY of this project's adws,
-  // cross-referenced against the real Agent registry (list_agents), and lets
-  // you edit/create/delete the underlying Agent record. Agent edits are a
-  // different backend resource than the project (update_project only
-  // persists `adws`), so they save immediately via update_agent/
-  // register_agent/delete_agent rather than through the project's own
-  // dirty/save-banner flow.
+  // A `type: 'agent'` row swaps its "default" field for createAgentDefaultPicker
+  // instead of a plain text input — everything else about a parameter row is
+  // identical regardless of who owns the array.
 
-  function renderAgentParamsList(agentObj, container, onChange) {
+  function renderParamsList(params, container, onChange, cleanupsArr) {
     container.innerHTML = '';
-    (agentObj.parameters || []).forEach((param, idx) => {
+    params.forEach((param, idx) => {
       const row = document.createElement('div');
       row.className = 'pv-param-row';
 
@@ -567,24 +503,35 @@ const ProjectView = (() => {
 
       const typeSelect = document.createElement('select');
       typeSelect.className = 'form-input pv-param-type-select';
-      ['string', 'number', 'boolean'].forEach((t) => {
+      ['string', 'number', 'boolean', 'agent'].forEach((t) => {
         const opt = document.createElement('option');
         opt.value = t;
         opt.textContent = t;
         if ((param.type || 'string') === t) opt.selected = true;
         typeSelect.appendChild(opt);
       });
-      typeSelect.addEventListener('change', () => { param.type = typeSelect.value; onChange(); });
+      typeSelect.addEventListener('change', () => {
+        param.type = typeSelect.value;
+        onChange();
+        renderParamsList(params, container, onChange, cleanupsArr);
+      });
 
       const labelInput = mkTextInput(param.label || '', 'label (optional)', (v) => {
         if (v) param.label = v; else delete param.label;
         onChange();
       }, 'flex-1');
 
-      const defaultInput = mkTextInput(param.default !== undefined ? String(param.default) : '', 'default (optional)', (v) => {
-        if (v === '') delete param.default; else param.default = v;
-        onChange();
-      }, 'flex-1');
+      let defaultField;
+      if ((param.type || 'string') === 'agent') {
+        const picker = createAgentDefaultPicker(param, onChange);
+        defaultField = picker.el;
+        if (cleanupsArr) cleanupsArr.push(picker.cleanup);
+      } else {
+        defaultField = mkTextInput(param.default !== undefined ? String(param.default) : '', 'default (optional)', (v) => {
+          if (v === '') delete param.default; else param.default = v;
+          onChange();
+        }, 'flex-1');
+      }
 
       const rmBtn = document.createElement('button');
       rmBtn.type = 'button';
@@ -592,10 +539,9 @@ const ProjectView = (() => {
       rmBtn.title = 'remove parameter';
       rmBtn.textContent = '✕';
       rmBtn.addEventListener('click', () => {
-        const arr = agentObj.parameters;
-        const i = arr.indexOf(param);
-        if (i >= 0) arr.splice(i, 1);
-        renderAgentParamsList(agentObj, container, onChange);
+        const i = params.indexOf(param);
+        if (i >= 0) params.splice(i, 1);
+        renderParamsList(params, container, onChange, cleanupsArr);
         onChange();
       });
 
@@ -603,11 +549,21 @@ const ProjectView = (() => {
       row.appendChild(flagInput);
       row.appendChild(typeSelect);
       row.appendChild(labelInput);
-      row.appendChild(defaultInput);
+      row.appendChild(defaultField);
       row.appendChild(rmBtn);
       container.appendChild(row);
     });
   }
+
+  // ── Agent Roles section (project-level Agent registry) ─────────────────
+  //
+  // Shows every Agent id referenced by a `type: 'agent'` parameter default
+  // anywhere in this project's ADWs, cross-referenced against the real Agent
+  // registry (list_agents), and lets you edit/create/delete the underlying
+  // Agent record. Agent edits are a different backend resource than the
+  // project (update_project only persists `adws`), so they save immediately
+  // via update_agent/register_agent/delete_agent rather than through the
+  // project's own dirty/save-banner flow.
 
   // Builds a debounced (~500ms) per-card save function that PATCHes the
   // Agent via update_agent, with a small inline status indicator.
@@ -640,26 +596,26 @@ const ProjectView = (() => {
     };
   }
 
-  function collectReferencedAgentNames() {
-    const names = [];
+  function collectReferencedAgentIds() {
+    const ids = [];
     const seen = new Set();
     ((currentDraft && currentDraft.adws) || []).forEach((adw) => {
-      (adw.agents || []).forEach((n) => {
-        const name = (n || '').trim();
-        if (name && !seen.has(name)) {
-          seen.add(name);
-          names.push(name);
+      (adw.parameters || []).forEach((p) => {
+        if (!p || p.type !== 'agent') return;
+        const id = (p.default != null ? String(p.default) : '').trim();
+        if (id && !seen.has(id)) {
+          seen.add(id);
+          ids.push(id);
         }
       });
     });
-    return names;
+    return ids;
   }
 
   function renderConfiguredAgentCard(agent) {
     const card = document.createElement('div');
     card.className = 'pv-agent-card';
     card.dataset.agentId = agent.id;
-    card.dataset.agentName = agent.name;
 
     const header = document.createElement('div');
     header.className = 'pv-agent-card-header';
@@ -718,20 +674,20 @@ const ProjectView = (() => {
     paramsListEl.className = 'pv-params-list';
     paramsSection.appendChild(paramsListEl);
     if (!agent.parameters) agent.parameters = [];
-    renderAgentParamsList(agent, paramsListEl, scheduleSave);
+    renderParamsList(agent.parameters, paramsListEl, scheduleSave, agentPickerCleanups);
     addParamBtn.addEventListener('click', () => {
       agent.parameters.push({ name: '', flag: '', type: 'string' });
-      renderAgentParamsList(agent, paramsListEl, scheduleSave);
+      renderParamsList(agent.parameters, paramsListEl, scheduleSave, agentPickerCleanups);
       scheduleSave();
     });
     card.appendChild(paramsSection);
 
     delBtn.addEventListener('click', async () => {
-      if (!confirm(`Delete agent role "${agent.name}"? Workflows referencing this name will show it as "not yet configured" again.`)) return;
+      if (!confirm(`Delete agent role "${agent.name}"? Parameters referencing this id will show it as "not yet configured" again.`)) return;
       delBtn.disabled = true;
       try {
         await apiCallLocal('/api/v1/command', 'POST', { type: 'delete_agent', payload: { id: agent.id } });
-        extraAgentNames = extraAgentNames.filter((n) => n !== agent.name);
+        extraAgentIds = extraAgentIds.filter((id) => id !== agent.id);
         await ensureAgentsLoaded(true);
         await renderAgentsSection();
       } catch (e) {
@@ -744,15 +700,15 @@ const ProjectView = (() => {
     return card;
   }
 
-  function renderUnconfiguredAgentCard(name) {
+  function renderUnconfiguredAgentCard(id) {
     const card = document.createElement('div');
     card.className = 'pv-agent-card pv-agent-card-unconfigured';
-    card.dataset.agentName = name;
+    card.dataset.agentId = id;
 
     const header = document.createElement('div');
     header.className = 'pv-agent-card-header';
     const nameEl = document.createElement('strong');
-    nameEl.textContent = name;
+    nameEl.textContent = id;
     const tag = document.createElement('span');
     tag.className = 'pv-agent-tag';
     tag.textContent = 'not yet configured';
@@ -772,8 +728,10 @@ const ProjectView = (() => {
       createBtn.disabled = true;
       statusEl.textContent = 'creating…';
       try {
-        const id = uniqueAgentId(name);
-        await apiCallLocal('/api/v1/command', 'POST', { type: 'register_agent', payload: { id, name } });
+        // The referenced value already IS the id (it's a raw CLI flag
+        // value, e.g. `--agent builder`) — no slugify/uniqueness pass
+        // needed, unlike the free-text "+ new agent role" flow below.
+        await apiCallLocal('/api/v1/command', 'POST', { type: 'register_agent', payload: { id, name: id } });
         await ensureAgentsLoaded(true);
         await renderAgentsSection();
       } catch (e) {
@@ -831,7 +789,7 @@ const ProjectView = (() => {
         const id = uniqueAgentId(name);
         await apiCallLocal('/api/v1/command', 'POST', { type: 'register_agent', payload: { id, name } });
         pendingAgentDrafts = pendingAgentDrafts.filter((d) => d !== draft);
-        extraAgentNames.push(name);
+        extraAgentIds.push(id);
         await ensureAgentsLoaded(true);
         await renderAgentsSection();
       } catch (e) {
@@ -849,9 +807,9 @@ const ProjectView = (() => {
 
   // Renders the top "Agent Roles" section. The Agent registry is only
   // fetched when there's actually something to cross-reference (a
-  // referenced name, an extra/just-created name, or a draft-in-progress) —
-  // a project with no agent references yet costs nothing extra to open, and
-  // "+ new agent role" / typing an agent name into an ADW's picker both
+  // referenced id, an extra/just-created id, or a draft-in-progress) — a
+  // project with no agent-type parameters yet costs nothing extra to open,
+  // and "+ new agent role" / picking a parameter's type as "agent" both
   // trigger the fetch on demand from there.
   async function renderAgentsSection() {
     const listEl = document.getElementById('pv-agent-roles-list');
@@ -859,8 +817,8 @@ const ProjectView = (() => {
     agentPickerCleanups.forEach((fn) => fn());
     agentPickerCleanups = [];
 
-    const referenced = collectReferencedAgentNames();
-    const needsRegistry = referenced.length > 0 || extraAgentNames.length > 0 || pendingAgentDrafts.length > 0;
+    const referenced = collectReferencedAgentIds();
+    const needsRegistry = referenced.length > 0 || extraAgentIds.length > 0 || pendingAgentDrafts.length > 0;
     if (needsRegistry) await ensureAgentsLoaded();
 
     listEl.innerHTML = '';
@@ -868,29 +826,29 @@ const ProjectView = (() => {
     if (agentsError && needsRegistry) {
       const note = document.createElement('div');
       note.className = 'pv-agent-registry-note';
-      note.textContent = `agent registry unavailable — showing names only (${agentsError})`;
+      note.textContent = `agent registry unavailable — showing ids only (${agentsError})`;
       listEl.appendChild(note);
     }
 
-    const allNames = [];
+    const allIds = [];
     const seen = new Set();
-    referenced.concat(extraAgentNames).forEach((n) => {
-      if (!seen.has(n)) {
-        seen.add(n);
-        allNames.push(n);
+    referenced.concat(extraAgentIds).forEach((id) => {
+      if (!seen.has(id)) {
+        seen.add(id);
+        allIds.push(id);
       }
     });
 
-    if (allNames.length === 0 && pendingAgentDrafts.length === 0) {
+    if (allIds.length === 0 && pendingAgentDrafts.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'pv-empty';
-      empty.textContent = "no agent roles referenced by this project's workflows yet.";
+      empty.textContent = "no agent roles referenced yet — give a workflow parameter type \"agent\", or create one below.";
       listEl.appendChild(empty);
     }
 
-    allNames.forEach((name) => {
-      const agent = findAgentByName(name);
-      listEl.appendChild(agent ? renderConfiguredAgentCard(agent) : renderUnconfiguredAgentCard(name));
+    allIds.forEach((id) => {
+      const agent = findAgentById(id);
+      listEl.appendChild(agent ? renderConfiguredAgentCard(agent) : renderUnconfiguredAgentCard(id));
     });
 
     pendingAgentDrafts.forEach((draft) => {
@@ -929,7 +887,7 @@ const ProjectView = (() => {
     }
     window.WorkflowDiagram.render(diagEl, currentDraft, {
       onSelectAdw: (adwId) => { switchAdwView('list'); focusAdwCardById(adwId); },
-      onSelectAgent: (name) => { focusAgentCardByName(name); },
+      onSelectAgent: (id) => { focusAgentCardById(id); },
       onAddWorkflow: () => addNewWorkflow(),
       onAddAgent: () => addNewAgentDraft()
     });
@@ -951,10 +909,10 @@ const ProjectView = (() => {
     flashCard(card);
   }
 
-  function focusAgentCardByName(name) {
+  function focusAgentCardById(id) {
     const listEl = document.getElementById('pv-agent-roles-list');
     if (!listEl) return;
-    const card = Array.from(listEl.querySelectorAll('.pv-agent-card')).find((c) => c.dataset.agentName === name);
+    const card = Array.from(listEl.querySelectorAll('.pv-agent-card')).find((c) => c.dataset.agentId === id);
     if (!card) return;
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     flashCard(card);
@@ -966,7 +924,7 @@ const ProjectView = (() => {
   function addNewWorkflow() {
     if (!currentDraft) return;
     if (!currentDraft.adws) currentDraft.adws = [];
-    currentDraft.adws.push({ id: '', path: '', name: '', agents: [], parameters: [] });
+    currentDraft.adws.push({ id: '', path: '', name: '', parameters: [] });
     markDirty();
     switchAdwView('list');
     renderAdwList();
@@ -1062,32 +1020,7 @@ const ProjectView = (() => {
     modelGroup.appendChild(picker.el);
     body.appendChild(modelGroup);
 
-    // agents
-    const agentsSection = document.createElement('div');
-    const agentsHeader = document.createElement('div');
-    agentsHeader.className = 'pv-section-header';
-    const agentsH = document.createElement('label');
-    agentsH.textContent = 'agents';
-    const addAgentBtn = document.createElement('button');
-    addAgentBtn.type = 'button';
-    addAgentBtn.className = 'btn btn-secondary pv-small-btn';
-    addAgentBtn.textContent = '+ agent';
-    agentsHeader.appendChild(agentsH);
-    agentsHeader.appendChild(addAgentBtn);
-    agentsSection.appendChild(agentsHeader);
-    const agentsListEl = document.createElement('div');
-    agentsListEl.className = 'pv-agents-list';
-    agentsSection.appendChild(agentsListEl);
-    if (!adw.agents) adw.agents = [];
-    renderAgentsList(adw, agentsListEl);
-    addAgentBtn.addEventListener('click', () => {
-      adw.agents.push('');
-      renderAgentsList(adw, agentsListEl);
-      markDirty();
-    });
-    body.appendChild(agentsSection);
-
-    // parameters
+    // parameters — agent selection lives here too, as a `type: 'agent'` row
     const paramsSection = document.createElement('div');
     const paramsHeader = document.createElement('div');
     paramsHeader.className = 'pv-section-header';
@@ -1104,10 +1037,10 @@ const ProjectView = (() => {
     paramsListEl.className = 'pv-params-list';
     paramsSection.appendChild(paramsListEl);
     if (!adw.parameters) adw.parameters = [];
-    renderParamsList(adw, paramsListEl);
+    renderParamsList(adw.parameters, paramsListEl, markDirty, pickerCleanups);
     addParamBtn.addEventListener('click', () => {
       adw.parameters.push({ name: '', flag: '', type: 'string' });
-      renderParamsList(adw, paramsListEl);
+      renderParamsList(adw.parameters, paramsListEl, markDirty, pickerCleanups);
       markDirty();
     });
     body.appendChild(paramsSection);
@@ -1209,6 +1142,7 @@ const ProjectView = (() => {
       } else if (out.type === 'boolean') {
         out.default = p.default === true || p.default === 'true';
       } else {
+        // 'string' and 'agent' both carry a plain string default.
         out.default = p.default;
       }
     }
@@ -1246,8 +1180,6 @@ const ProjectView = (() => {
       const out = { id: a.id.trim(), path: a.path.trim() };
       if (a.name && String(a.name).trim()) out.name = String(a.name).trim();
       if (a.model && String(a.model).trim()) out.model = String(a.model).trim();
-      const agents = (a.agents || []).map((x) => (x || '').trim()).filter(Boolean);
-      if (agents.length) out.agents = agents;
       const params = (a.parameters || []).map(buildParamPayload);
       if (params.length) out.parameters = params;
       return out;
@@ -1363,7 +1295,7 @@ const ProjectView = (() => {
     const proj = projects.find((p) => p.id === projectId);
 
     currentProjectId = projectId;
-    extraAgentNames = [];
+    extraAgentIds = [];
     pendingAgentDrafts = [];
     switchAdwView('list');
     const banner = document.getElementById('pv-save-banner');

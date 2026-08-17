@@ -23,12 +23,12 @@ verifies them. Don't read a green test run as covering them:
 | `MD-5` | jsdom has no layout engine, so caret/pixel alignment can't be measured. The suite substitutes a structural proxy (one source line renders as exactly one output line). |
 | `DU-5` | Synthesizing a genuine file drop. |
 | `WF-11`, `WF-13` | Covered structurally, but the real degraded/conflict UX is worth seeing. |
-| `AG-4` | Deletion goes through a native `confirm()` dialog, which browser automation must never trigger (see the rules below) — the suite stubs `window.confirm`, a browser pass has to actually see the prompt. |
+| `AG-5` | Deletion goes through a native `confirm()` dialog, which browser automation must never trigger (see the rules below) — the suite stubs `window.confirm`, a browser pass has to actually see the prompt. |
 | `RZ-1`, `RZ-2` | jsdom has no layout engine, so a `resize: both` handle can't actually be dragged. The suite only asserts the CSS declaration exists. |
 
 `DU-8` and `DU-9` are deliberately server-side checks — the dedup and
 path-sanitizing logic lives in the upload handler, so they're asserted in
-`server/tests/features.test.ts`, not the DOM suite. `AG-2`/`AG-3`/`AG-5`'s
+`server/tests/features.test.ts`, not the DOM suite. `AG-2`/`AG-3`/`AG-4`'s
 `register_agent`/`update_agent` persistence is likewise asserted server-side
 in `server/tests/agents.test.ts`.
 
@@ -151,18 +151,24 @@ Screenshot this.
 
 ### WF-5 — ADW fields are editable
 Expand an ADW (add one via `#pv-add-adw-btn` if the project has none).
-**Pass:** editable inputs exist for **id, name, path, model, agents, and
-parameters**. Typing changes their values without console errors.
+**Pass:** editable inputs exist for **id, name, path, model, and
+parameters**. Typing changes their values without console errors. There is
+**no separate "agents" field** — agent selection lives inside `parameters[]`
+(see WF-6).
 
-### WF-6 — Add and remove an agent
-Add agent `planner`, then `coder`; remove `planner`.
-**Pass:** the agent list reflects each change; removal takes out only the
-targeted entry.
+### WF-6 — An `agent`-typed parameter swaps in an agent-id picker
+Add a parameter, set its type to `agent`.
+**Pass:** the "default" field switches from plain text to a searchable
+picker (`.pv-agent-name-picker`) sourced from the `Agent` registry, showing
+each candidate's name and id. Switching the type back to `string`/`number`/
+`boolean` reverts it to plain text without losing the other fields (name,
+flag, label). This is the same mechanism SSSF's own `--agent` CLI flag
+already uses — e.g. a real `adw_prompt.py` ADW's `agent` parameter.
 
 ### WF-7 — Add and remove a parameter
 Add a parameter with name `branch`, flag `--branch`, type `string`.
 **Pass:** all parameter subfields are editable and removal works. `type` is
-constrained to `string | number | boolean`.
+constrained to `string | number | boolean | agent`.
 
 ### WF-8 — Model picker lists provider *and* model
 Open the model picker for an ADW.
@@ -350,24 +356,26 @@ Do **not** let an `alert()` actually fire.
 ## 5. Agent roles (new)
 
 The **Agent** entity (`register_agent`/`update_agent`/`delete_agent`/
-`list_agents`) is a workspace-wide registry, distinct from a project. A
-project's ADWs only reference agent roles by free-text name in `agents[]` —
-nothing on the backend enforces that name matches a real registered `Agent`.
-This section of the project view exists to make that link visible and
-editable. Open the `demo` project view; `#pv-agents-section` sits **above**
-`#pv-adw-list` (Hamburger → *Projects* → click a row, per WF-4).
+`list_agents`) is a workspace-wide registry, distinct from a project. An
+ADW references an agent role via a `parameters[]` entry with `type: 'agent'`,
+whose `default` holds the Agent's id — the same convention SSSF's own
+`--agent` CLI flag already uses (see WF-6). Nothing on the backend enforces
+that a given id matches a real registered `Agent`. This section of the
+project view exists to make that link visible and editable. Open the `demo`
+project view; `#pv-agents-section` sits **above** `#pv-adw-list`
+(Hamburger → *Projects* → click a row, per WF-4).
 
 ### AG-1 — Agent Roles section exists above the workflow list
 **Pass:** `#pv-agents-section` (header "agent roles", `#pv-add-agent-btn`)
 renders before the "workflows (adws)" header in DOM order. With no ADW
-referencing any agent name, `#pv-agent-roles-list` shows an explanatory empty
+parameter of type `agent`, `#pv-agent-roles-list` shows an explanatory empty
 state rather than nothing.
 
-### AG-2 — An ADW-referenced but unregistered agent shows "not yet configured"
-Add an ADW whose `agents[]` includes a name with no matching `Agent` record
-(e.g. `coder`, assuming it hasn't been registered yet).
+### AG-2 — An ADW-referenced but unregistered agent id shows "not yet configured"
+Add an ADW parameter with `type: agent` and a default id with no matching
+`Agent` record yet (e.g. `coder`, per WF-6).
 **Pass:** a dashed-border card (`.pv-agent-card-unconfigured`) appears in the
-Agent Roles section showing just the name, a "not yet configured" tag, and a
+Agent Roles section showing just the id, a "not yet configured" tag, and a
 **Create Agent Role** button.
 
 ### AG-3 — Create Agent Role promotes it to a full editable card
@@ -398,12 +406,13 @@ must verify this check unattended, stub it first:
 window.confirm = () => true;
 ```
 Confirming sends `delete_agent`; because `coder` is still referenced by the
-ADW, the card reverts to the "not yet configured" state from AG-2 rather than
-disappearing — the ADW's `agents: ["coder"]` string is untouched.
+ADW's `agent`-typed parameter, the card reverts to the "not yet configured"
+state from AG-2 rather than disappearing — the parameter's `default: "coder"`
+is untouched.
 
 ### AG-6 — "+ new agent role" registers a standalone agent
-Click `#pv-add-agent-btn`, type a name no ADW references (e.g. `reviewer`),
-click **Create Agent Role**.
+Click `#pv-add-agent-btn`, type a name no ADW parameter references (e.g.
+`reviewer`), click **Create Agent Role**.
 **Pass:** it appears as a configured card even though nothing in this
 project's `adws[]` mentions it — the section shows every agent *referenced by
 an ADW or created this session*, not only ones an ADW points at.
@@ -420,11 +429,12 @@ to `#pv-add-adw-btn`. Clicking "diagram" hides `#pv-adw-list` and shows
 `#pv-adw-diagram`; the active button is visually distinct. Reopening the
 project view (even a different project) always starts back on "list".
 
-### DG-2 — The diagram shows one box per workflow and per referenced agent role
+### DG-2 — The diagram shows one box per workflow and per referenced agent id
 **Pass:** a clickable UML-style box-and-line diagram renders: one box per ADW
-(left column) connected by a line to a box per unique agent-role name it
-references (right column, deduplicated — an agent used by two workflows is
-still one box with two incoming lines). Screenshot this.
+(left column) connected by a line to a box per unique agent id its
+`type: 'agent'` parameters reference (right column, deduplicated — an agent
+used by two workflows is still one box with two incoming lines). Screenshot
+this.
 
 ### DG-3 — Clicking a workflow node jumps to and expands its list-view card
 Click a workflow's box in the diagram.

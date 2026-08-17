@@ -13,8 +13,7 @@ function demoProject(overrides: any = {}) {
         name: 'Build Feature',
         path: 'adws/build_feature.py',
         model: 'anthropic/claude-3-opus',
-        agents: ['coder'],
-        parameters: []
+        parameters: [{ name: 'agent', flag: '--agent', type: 'agent', default: 'coder' }]
       }
     ],
     ...overrides
@@ -119,7 +118,7 @@ describe('AG: Agent Roles section', () => {
     const list = doc.getElementById('pv-agent-roles-list')!;
     const card = list.querySelector('.pv-agent-card') as HTMLElement;
     expect(card.classList.contains('pv-agent-card-unconfigured')).toBe(true);
-    expect(card.dataset.agentName).toBe('coder');
+    expect(card.dataset.agentId).toBe('coder');
     expect(card.textContent).toContain('not yet configured');
 
     const createBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === 'Create Agent Role') as HTMLButtonElement;
@@ -180,7 +179,7 @@ describe('AG: Agent Roles section', () => {
     expect(agents.length).toBe(0);
     const after = doc.querySelector('#pv-agent-roles-list .pv-agent-card') as HTMLElement;
     expect(after.classList.contains('pv-agent-card-unconfigured')).toBe(true);
-    expect(after.dataset.agentName).toBe('coder');
+    expect(after.dataset.agentId).toBe('coder');
   });
 
   it('AG-5: "+ new agent role" creates a draft card; naming it and creating registers a standalone agent not referenced by any ADW', async () => {
@@ -209,7 +208,7 @@ describe('AG: Agent Roles section', () => {
     expect(registerCmd.payload.name).toBe('reviewer');
 
     const cards = doc.querySelectorAll('#pv-agent-roles-list .pv-agent-card');
-    const names = Array.from(cards).map((c) => (c as HTMLElement).dataset.agentName);
+    const names = Array.from(cards).map((c) => (c as HTMLElement).dataset.agentId);
     expect(names).toContain('reviewer');
   });
 });
@@ -241,7 +240,7 @@ describe('DG: Workflow diagram view', () => {
     const wfNode = diagram.querySelector('.wd-node-workflow') as HTMLElement;
     const agentNode = diagram.querySelector('.wd-node-agent') as HTMLElement;
     expect(wfNode.dataset.adwId).toBe('build-feature');
-    expect(agentNode.dataset.agentName).toBe('coder');
+    expect(agentNode.dataset.agentId).toBe('coder');
   });
 
   it('DG-2: clicking a workflow node switches back to list view, expands and flashes the matching card', async () => {

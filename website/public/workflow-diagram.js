@@ -33,26 +33,30 @@ const WorkflowDiagram = (() => {
     while (el.firstChild) el.removeChild(el.firstChild);
   }
 
-  function normalizeAgentName(name) {
-    return (name == null ? '' : String(name)).trim();
+  function normalizeAgentId(id) {
+    return (id == null ? '' : String(id)).trim();
   }
 
-  // Dedupe agent-role names across all adws, preserving first-appearance
-  // order, and count how many workflows reference each one.
+  // An ADW references an agent role via a `type: 'agent'` parameter whose
+  // `default` holds the Agent's id — this is exactly SSSF's own `--agent`
+  // CLI-flag convention, not a separate board-only field. Dedupe those ids
+  // across all adws, preserving first-appearance order, and count how many
+  // workflows reference each one.
   function collectAgents(adws) {
     const order = [];
     const seen = new Set();
     const usage = new Map();
     adws.forEach((adw) => {
-      const agents = Array.isArray(adw && adw.agents) ? adw.agents : [];
-      agents.forEach((raw) => {
-        const name = normalizeAgentName(raw);
-        if (!name) return;
-        if (!seen.has(name)) {
-          seen.add(name);
-          order.push(name);
+      const params = Array.isArray(adw && adw.parameters) ? adw.parameters : [];
+      params.forEach((p) => {
+        if (!p || p.type !== 'agent') return;
+        const id = normalizeAgentId(p.default);
+        if (!id) return;
+        if (!seen.has(id)) {
+          seen.add(id);
+          order.push(id);
         }
-        usage.set(name, (usage.get(name) || 0) + 1);
+        usage.set(id, (usage.get(id) || 0) + 1);
       });
     });
     return { names: order, usage };
@@ -244,11 +248,12 @@ const WorkflowDiagram = (() => {
     adws.forEach((adw, i) => {
       const key = (adw && adw.id) ? adw.id : '__idx' + i;
       const from = workflowPositions.get(key);
-      const agents = Array.isArray(adw && adw.agents) ? adw.agents : [];
-      agents.forEach((raw) => {
-        const name = normalizeAgentName(raw);
-        if (!name) return;
-        const to = agentPositions.get(name);
+      const params = Array.isArray(adw && adw.parameters) ? adw.parameters : [];
+      params.forEach((p) => {
+        if (!p || p.type !== 'agent') return;
+        const id = normalizeAgentId(p.default);
+        if (!id) return;
+        const to = agentPositions.get(id);
         if (!to) return;
         const x1 = from.x + from.w;
         const y1 = from.y + from.h / 2;
@@ -312,7 +317,7 @@ const WorkflowDiagram = (() => {
             if (typeof opts.onSelectAgent === 'function') opts.onSelectAgent(name);
           }
         });
-        node.dataset.agentName = name;
+        node.dataset.agentId = name;
         canvas.appendChild(node);
       });
     }

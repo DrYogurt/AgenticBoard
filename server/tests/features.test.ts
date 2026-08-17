@@ -243,15 +243,17 @@ describe('New website feature endpoints', () => {
   });
 
   describe('ADW editor persistence (update_project)', () => {
-    it('round-trips the editable ADW fields the workflow editor writes', async () => {
+    it('round-trips the editable ADW fields the workflow editor writes, including agent-typed parameters', async () => {
       const adws = [
         {
           id: 'implement-feature',
           path: './workflows/implement-feature',
           name: 'Implement Feature',
           model: 'anthropic/claude-opus-5',
-          agents: ['planner', 'coder'],
-          parameters: [{ name: 'branch', flag: '--branch', type: 'string', label: 'Branch', default: 'main' }]
+          parameters: [
+            { name: 'branch', flag: '--branch', type: 'string', label: 'Branch', default: 'main' },
+            { name: 'agent', flag: '--agent', type: 'agent', label: 'Agent to run', default: 'builder' }
+          ]
         }
       ];
       const res = await request('POST', '/api/v1/command', {
@@ -264,8 +266,9 @@ describe('New website feature endpoints', () => {
       const saved = fetched.json.data.adws[0];
       expect(saved.name).toBe('Implement Feature');
       expect(saved.model).toBe('anthropic/claude-opus-5');
-      expect(saved.agents).toEqual(['planner', 'coder']);
+      expect(saved.agents).toBeUndefined();
       expect(saved.parameters[0].flag).toBe('--branch');
+      expect(saved.parameters[1]).toEqual({ name: 'agent', flag: '--agent', type: 'agent', label: 'Agent to run', default: 'builder' });
     });
 
     it('rejects an ADW field the schema does not allow', async () => {

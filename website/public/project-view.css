@@ -188,14 +188,12 @@
   padding: 4px 8px;
 }
 
-.pv-agents-list,
 .pv-params-list {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.pv-agent-row,
 .pv-param-row {
   display: flex;
   gap: 6px;
@@ -481,6 +479,9 @@
 }
 
 .pv-agent-option {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   padding: 6px 10px;
   cursor: pointer;
   font-size: 0.76rem;
@@ -489,6 +490,21 @@
 
 .pv-agent-option:hover {
   background: var(--mocha-surface0);
+}
+
+.pv-agent-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-agent-option-id {
+  font-size: 0.65rem;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  flex-shrink: 0;
 }
 
 .pv-agent-dropdown-hint,

@@ -29,10 +29,6 @@
           "path": { "type": "string" },
           "name": { "type": "string" },
           "model": { "type": "string" },
-          "agents": {
-            "type": "array",
-            "items": { "type": "string" }
-          },
           "parameters": {
             "type": "array",
             "items": {
@@ -41,7 +37,7 @@
               "properties": {
                 "name": { "type": "string" },
                 "flag": { "type": "string" },
-                "type": { "type": "string", "enum": ["string", "number", "boolean"] },
+                "type": { "type": "string", "enum": ["string", "number", "boolean", "agent"] },
                 "label": { "type": "string" },
                 "default": {}
               },

@@ -13,8 +13,7 @@ function demoProject(overrides: any = {}) {
         name: 'Build Feature',
         path: 'adws/build_feature.py',
         model: 'anthropic/claude-3-opus',
-        agents: ['coder'],
-        parameters: []
+        parameters: [{ name: 'agent', flag: '--agent', type: 'agent', default: 'coder' }]
       }
     ],
     ...overrides
@@ -166,7 +165,7 @@ describe('WF: workflow editor', () => {
     return mounted.document;
   }
 
-  it('WF-5: ADW fields are editable for id, name, path, model, agents, parameters', async () => {
+  it('WF-5: ADW fields are editable for id, name, path, model, parameters (agent selection lives in parameters)', async () => {
     const setup = setupBoard([demoProject()]);
     mounted = setup.mounted;
     await boot(mounted);
@@ -183,8 +182,10 @@ describe('WF: workflow editor', () => {
     expect(nameInput).toBeTruthy();
     expect(pathInput).toBeTruthy();
     expect(modelInput).toBeTruthy();
-    expect(card.querySelector('.pv-agents-list')).toBeTruthy();
     expect(card.querySelector('.pv-params-list')).toBeTruthy();
+    // No separate ADW-level "agents" list — the fixture's agent-typed
+    // parameter is what shows an agent id here.
+    expect(card.querySelector('.pv-agents-list')).toBeFalsy();
 
     idInput.value = 'build-feature-v2';
     expect(() => dispatch(idInput, 'input')).not.toThrow();
@@ -197,38 +198,45 @@ describe('WF: workflow editor', () => {
     expect(() => dispatch(pathInput, 'input')).not.toThrow();
   });
 
-  it('WF-6: add and remove an agent', async () => {
-    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })]);
+  it('WF-6: an agent-typed parameter swaps its default field for an agent-id picker', async () => {
+    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })]);
     mounted = setup.mounted;
     await boot(mounted);
     const doc = await openProjectView(mounted);
     const card = doc.querySelector('.pv-adw-card') as HTMLElement;
-    const addAgentBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === '+ agent') as HTMLButtonElement;
+    const addParamBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === '+ parameter') as HTMLButtonElement;
+    dispatch(addParamBtn, 'click');
 
-    dispatch(addAgentBtn, 'click');
-    let agentInputs = card.querySelectorAll('.pv-agent-row input') as NodeListOf<HTMLInputElement>;
-    agentInputs[0].value = 'planner';
-    dispatch(agentInputs[0], 'input');
+    let row = card.querySelector('.pv-param-row') as HTMLElement;
+    const typeSelect = row.querySelector('select') as HTMLSelectElement;
+    // Before switching type, the default field is a plain text input.
+    expect(row.querySelector('.pv-agent-name-picker')).toBeFalsy();
 
-    dispatch(addAgentBtn, 'click');
-    agentInputs = card.querySelectorAll('.pv-agent-row input') as NodeListOf<HTMLInputElement>;
-    agentInputs[1].value = 'coder';
-    dispatch(agentInputs[1], 'input');
+    typeSelect.value = 'agent';
+    dispatch(typeSelect, 'change');
 
-    let rows = card.querySelectorAll('.pv-agent-row');
-    expect(rows.length).toBe(2);
-    expect((rows[0].querySelector('input') as HTMLInputElement).value).toBe('planner');
-    expect((rows[1].querySelector('input') as HTMLInputElement).value).toBe('coder');
+    row = card.querySelector('.pv-param-row') as HTMLElement;
+    const agentPickerInput = row.querySelector('.pv-agent-name-picker input') as HTMLInputElement;
+    expect(agentPickerInput).toBeTruthy();
 
-    const rmBtn = rows[0].querySelector('.pv-icon-btn') as HTMLButtonElement;
+    agentPickerInput.value = 'builder';
+    dispatch(agentPickerInput, 'input');
+    expect(agentPickerInput.value).toBe('builder');
+
+    // Switching back away from 'agent' reverts the default field to plain text.
+    const typeSelect2 = row.querySelector('select') as HTMLSelectElement;
+    typeSelect2.value = 'string';
+    dispatch(typeSelect2, 'change');
+    row = card.querySelector('.pv-param-row') as HTMLElement;
+    expect(row.querySelector('.pv-agent-name-picker')).toBeFalsy();
+
+    const rmBtn = row.querySelector('.pv-icon-btn') as HTMLButtonElement;
     dispatch(rmBtn, 'click');
-    rows = card.querySelectorAll('.pv-agent-row');
-    expect(rows.length).toBe(1);
-    expect((rows[0].querySelector('input') as HTMLInputElement).value).toBe('coder');
+    expect(card.querySelectorAll('.pv-param-row').length).toBe(0);
   });
 
-  it('WF-7: add and remove a parameter; type constrained to string/number/boolean', async () => {
-    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })]);
+  it('WF-7: add and remove a parameter; type constrained to string/number/boolean/agent', async () => {
+    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })]);
     mounted = setup.mounted;
     await boot(mounted);
     const doc = await openProjectView(mounted);
@@ -240,7 +248,7 @@ describe('WF: workflow editor', () => {
     const [nameInput, flagInput] = row.querySelectorAll('input') as NodeListOf<HTMLInputElement>;
     const typeSelect = row.querySelector('select') as HTMLSelectElement;
     const options = Array.from(typeSelect.options).map((o) => o.value);
-    expect(options).toEqual(['string', 'number', 'boolean']);
+    expect(options).toEqual(['string', 'number', 'boolean', 'agent']);
 
     nameInput.value = 'branch';
     dispatch(nameInput, 'input');
@@ -261,7 +269,7 @@ describe('WF: workflow editor', () => {
       { provider: 'google', model: 'gemini-pro', id: 'google/gemini-pro' }
     ];
     const setup = setupBoard(
-      [demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })],
+      [demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })],
       () => ({ json: { success: true, data: models } })
     );
     mounted = setup.mounted;
@@ -285,7 +293,7 @@ describe('WF: workflow editor', () => {
   it('WF-9: model picker search filters on both provider and model, capped with a hint', async () => {
     const models = [...makeModels(60, 'anthropic'), { provider: 'google', model: 'gemini-pro', id: 'google/gemini-pro' }];
     const setup = setupBoard(
-      [demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })],
+      [demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })],
       () => ({ json: { success: true, data: models } })
     );
     mounted = setup.mounted;
@@ -315,7 +323,7 @@ describe('WF: workflow editor', () => {
   it('WF-10: selecting a model sets provider/model, and it can be cleared', async () => {
     const models = [{ provider: 'anthropic', model: 'claude-3-opus', id: 'anthropic/claude-3-opus' }];
     const setup = setupBoard(
-      [demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })],
+      [demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })],
       () => ({ json: { success: true, data: models } })
     );
     mounted = setup.mounted;
@@ -352,7 +360,7 @@ describe('WF: workflow editor', () => {
   });
 
   it('WF-12: saving posts update_project with the complete adws array', async () => {
-    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })]);
+    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })]);
     mounted = setup.mounted;
     setup.stub.on('POST', '/api/v1/command', ({ body }) => {
       expect(body.type).toBe('update_project');
@@ -362,20 +370,32 @@ describe('WF: workflow editor', () => {
     await boot(mounted);
     const doc = await openProjectView(mounted);
     const card = doc.querySelector('.pv-adw-card') as HTMLElement;
-    const addAgentBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === '+ agent') as HTMLButtonElement;
-    dispatch(addAgentBtn, 'click');
-    const agentInput = card.querySelector('.pv-agent-row input') as HTMLInputElement;
-    agentInput.value = 'coder';
-    dispatch(agentInput, 'input');
-
     const addParamBtn = Array.from(card.querySelectorAll('button')).find((b) => b.textContent === '+ parameter') as HTMLButtonElement;
     dispatch(addParamBtn, 'click');
-    const paramRow = card.querySelector('.pv-param-row') as HTMLElement;
+    let paramRow = card.querySelector('.pv-param-row') as HTMLElement;
     const [nameInput, flagInput] = paramRow.querySelectorAll('input') as NodeListOf<HTMLInputElement>;
     nameInput.value = 'branch';
     dispatch(nameInput, 'input');
     flagInput.value = '--branch';
     dispatch(flagInput, 'input');
+
+    // A second, agent-typed parameter to confirm its picker-based default
+    // round-trips through save the same way a plain string default does.
+    dispatch(addParamBtn, 'click');
+    const rows = card.querySelectorAll('.pv-param-row');
+    const agentRow = rows[rows.length - 1] as HTMLElement;
+    const [agentNameInput, agentFlagInput] = agentRow.querySelectorAll('input') as NodeListOf<HTMLInputElement>;
+    agentNameInput.value = 'agent';
+    dispatch(agentNameInput, 'input');
+    agentFlagInput.value = '--agent';
+    dispatch(agentFlagInput, 'input');
+    const agentTypeSelect = agentRow.querySelector('select') as HTMLSelectElement;
+    agentTypeSelect.value = 'agent';
+    dispatch(agentTypeSelect, 'change');
+    const agentPickerInput = (card.querySelectorAll('.pv-param-row')[rows.length - 1] as HTMLElement)
+      .querySelector('.pv-agent-name-picker input') as HTMLInputElement;
+    agentPickerInput.value = 'coder';
+    dispatch(agentPickerInput, 'input');
 
     const saveBtn = doc.getElementById('pv-save-btn') as HTMLButtonElement;
     dispatch(saveBtn, 'click');
@@ -386,15 +406,18 @@ describe('WF: workflow editor', () => {
     const adws = saveCall!.body.payload.adws;
     expect(adws).toHaveLength(1);
     expect(adws[0].id).toBe('wf');
-    expect(adws[0].agents).toEqual(['coder']);
-    expect(adws[0].parameters).toEqual([{ name: 'branch', flag: '--branch', type: 'string' }]);
+    expect(adws[0].agents).toBeUndefined();
+    expect(adws[0].parameters).toEqual([
+      { name: 'branch', flag: '--branch', type: 'string' },
+      { name: 'agent', flag: '--agent', type: 'agent', default: 'coder' }
+    ]);
 
     const banner = doc.getElementById('pv-save-banner')!;
     expect(banner.textContent).toContain('saved.');
   });
 
   it('WF-13: a save conflict surfaces a readable error, not a silent failure or raw stack', async () => {
-    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })]);
+    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })]);
     setup.stub.on('POST', '/api/v1/command', () => ({ status: 409, json: { success: false, error: 'revision conflict: board changed since load' } }));
     mounted = setup.mounted;
     await boot(mounted);
@@ -410,7 +433,7 @@ describe('WF: workflow editor', () => {
   });
 
   it('WF-14: renaming an ADW id shows an explicit orphan warning', async () => {
-    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', agents: [], parameters: [] }] })]);
+    const setup = setupBoard([demoProject({ adws: [{ id: 'wf', path: 'adws/wf.py', name: 'WF', parameters: [] }] })]);
     mounted = setup.mounted;
     await boot(mounted);
     const doc = await openProjectView(mounted);
