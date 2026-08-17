@@ -7,12 +7,14 @@
 // via the generic /api/v1/command endpoint (update_project).
 //
 // Agent selection is just another ADW parameter: a parameter with
-// `type: 'agent'` means its `default` is an Agent id (this is exactly SSSF's
-// own `--agent` CLI-flag convention — e.g. `adw_prompt.py`'s real `agent`
-// parameter with `default: 'builder'`). There is deliberately no separate
-// ADW-level "agents" field or free-text-to-registry promotion step — the
-// parameter *is* the reference, so editing an ADW only ever means editing
-// its parameters.
+// `type: 'agent'` means its `default` is an agent name from the project's own
+// `adws/adw_sssf_config/sssf.config.yaml` roster (SSSF's own `--agent`
+// CLI-flag convention — e.g. a real `adw_prompt.py`'s `agent` parameter).
+// There is deliberately no board-owned "Agent" concept here: the "agent
+// roles" section reads and writes that real file (GET/PUT
+// /api/v1/projects/:id/sssf-config), and each agent's system.md/user.md
+// prompt files and each workflow's own script file are edited in place via
+// the generic project-file endpoint (GET/PUT /api/v1/projects/:id/file).
 //
 // Public API: window.ProjectView = { open, bindProjectRows, refresh }
 
@@ -27,22 +29,19 @@ const ProjectView = (() => {
   let modelsError = null;
   let modelsLoadAttempted = false;
 
-  // Agent registry (list_agents) — shared between the "Agent Roles" section
-  // and any `type: 'agent'` parameter's default-value picker (see
-  // createAgentDefaultPicker below).
-  let agentsCache = null;
-  let agentsError = null;
-  let agentsLoadAttempted = false;
-  // Agent ids created via "+ new agent role" this modal session that aren't
-  // (yet) referenced by any ADW parameter — kept visible until the modal is
-  // reopened, since the registry itself has no per-project concept of them.
-  let extraAgentIds = [];
-  // In-progress "+ new agent role" cards that haven't been registered yet.
-  let pendingAgentDrafts = [];
-  // Document-level listener cleanups for pickers inside the Agent Roles
-  // section specifically (separate from pickerCleanups, which is scoped to
-  // the ADW list and fully rebuilt by renderAdwList()).
+  // sssf.config.yaml roster for the currently-open project. Unlike models
+  // (workspace-wide, heavy, lazily fetched), this is small and scoped to the
+  // project already being opened, so it's fetched eagerly alongside the ADW
+  // list rather than on first picker focus.
+  let sssfDefaults = null;
+  let agentsDraft = [];
+  let agentsAvailable = false;
+  let agentsLoadError = null;
+  let agentsDirty = false;
+  let newAgentDraft = null; // { name } while the "+ new agent role" inline form is open
   let agentPickerCleanups = [];
+
+  const THINKING_LEVELS = ['', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
   let fetchedProjectsCache = null;
   let usedFallbackFetch = false;
@@ -126,6 +125,116 @@ const ProjectView = (() => {
     banner.appendChild(el);
   }
 
+  // ── generic project-file editor (workflow scripts, agent prompt files) ──
+  //
+  // A collapsible "show <label>" toggle that lazily fetches a text file's
+  // content on first expand and lets it be edited/saved independently of
+  // everything else on the page — a different backend resource (a real file
+  // on disk) than either update_project or the sssf-config roster PUT.
+  // `getPath` is a function, not a string, so the file this points at always
+  // reflects the owning object's *current* value (e.g. adw.path after the
+  // user edits it) rather than whatever it was when the card was built.
+
+  function createFileEditor(getPath, label) {
+    const wrap = document.createElement('div');
+    wrap.className = 'pv-file-editor';
+
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'btn btn-secondary pv-small-btn';
+    toggleBtn.textContent = `show ${label}`;
+    wrap.appendChild(toggleBtn);
+
+    const body = document.createElement('div');
+    body.className = 'pv-file-editor-body hidden';
+    wrap.appendChild(body);
+
+    const ta = document.createElement('textarea');
+    ta.className = 'form-input textarea pv-file-editor-textarea';
+    ta.spellcheck = false;
+    body.appendChild(ta);
+
+    const footer = document.createElement('div');
+    footer.className = 'pv-file-editor-footer';
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'btn btn-secondary pv-small-btn';
+    saveBtn.textContent = `save ${label}`;
+    const statusEl = document.createElement('span');
+    statusEl.className = 'pv-agent-save-status';
+    footer.appendChild(saveBtn);
+    footer.appendChild(statusEl);
+    body.appendChild(footer);
+
+    let loaded = false;
+    let original = '';
+
+    async function load() {
+      const relPath = getPath();
+      if (!relPath) {
+        statusEl.textContent = 'no path set yet';
+        statusEl.className = 'pv-agent-save-status pv-err';
+        return;
+      }
+      statusEl.textContent = 'loading…';
+      statusEl.className = 'pv-agent-save-status';
+      ta.disabled = true;
+      try {
+        const data = await apiCallLocal(`/api/v1/projects/${encodeURIComponent(currentProjectId)}/file?path=${encodeURIComponent(relPath)}`);
+        original = data && data.content != null ? data.content : '';
+        ta.value = original;
+        statusEl.textContent = data && data.exists === false ? 'file does not exist yet — saving will create it' : '';
+      } catch (e) {
+        statusEl.textContent = `error: ${(e && e.message) || e}`;
+        statusEl.className = 'pv-agent-save-status pv-err';
+      } finally {
+        ta.disabled = false;
+      }
+    }
+
+    toggleBtn.addEventListener('click', async () => {
+      const willShow = body.classList.contains('hidden');
+      body.classList.toggle('hidden');
+      toggleBtn.textContent = willShow ? `hide ${label}` : `show ${label}`;
+      if (willShow && !loaded) {
+        loaded = true;
+        await load();
+      }
+    });
+
+    ta.addEventListener('input', () => {
+      if (statusEl.className.indexOf('pv-err') === -1) {
+        statusEl.textContent = ta.value !== original ? 'unsaved changes' : '';
+        statusEl.className = 'pv-agent-save-status';
+      }
+    });
+
+    saveBtn.addEventListener('click', async () => {
+      const relPath = getPath();
+      if (!relPath) {
+        statusEl.textContent = 'no path set yet';
+        statusEl.className = 'pv-agent-save-status pv-err';
+        return;
+      }
+      saveBtn.disabled = true;
+      statusEl.textContent = 'saving…';
+      statusEl.className = 'pv-agent-save-status';
+      try {
+        await apiCallLocal(`/api/v1/projects/${encodeURIComponent(currentProjectId)}/file`, 'PUT', { path: relPath, content: ta.value });
+        original = ta.value;
+        statusEl.textContent = 'saved';
+        statusEl.className = 'pv-agent-save-status pv-ok';
+      } catch (e) {
+        statusEl.textContent = `error: ${(e && e.message) || e}`;
+        statusEl.className = 'pv-agent-save-status pv-err';
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    return wrap;
+  }
+
   // ── model list (lazy fetch, cached for page lifetime) ──────────────────
 
   async function ensureModelsLoaded() {
@@ -165,7 +274,7 @@ const ProjectView = (() => {
 
   const MODEL_RESULT_CAP = 50;
 
-  function createModelPicker(adw, onChange) {
+  function createModelPicker(obj, onChange) {
     const wrap = document.createElement('div');
     wrap.className = 'pv-model-picker';
 
@@ -176,7 +285,7 @@ const ProjectView = (() => {
     input.type = 'text';
     input.className = 'form-input';
     input.placeholder = 'search or type a model...';
-    input.value = adw.model || '';
+    input.value = obj.model || '';
     input.autocomplete = 'off';
 
     const clearBtn = document.createElement('button');
@@ -184,7 +293,7 @@ const ProjectView = (() => {
     clearBtn.className = 'pv-model-clear-btn';
     clearBtn.title = 'clear model';
     clearBtn.textContent = '✕';
-    clearBtn.style.display = adw.model ? '' : 'none';
+    clearBtn.style.display = obj.model ? '' : 'none';
 
     selectedRow.appendChild(input);
     selectedRow.appendChild(clearBtn);
@@ -200,7 +309,7 @@ const ProjectView = (() => {
     let userTyped = false;
 
     function commit(value) {
-      adw.model = value || undefined;
+      obj.model = value || undefined;
       input.value = value || '';
       clearBtn.style.display = value ? '' : 'none';
       onChange();
@@ -293,7 +402,7 @@ const ProjectView = (() => {
 
     input.addEventListener('input', () => {
       userTyped = true;
-      adw.model = input.value.trim() || undefined;
+      obj.model = input.value.trim() || undefined;
       clearBtn.style.display = input.value ? '' : 'none';
       onChange();
       if (!dropdown.classList.contains('hidden')) renderDropdown();
@@ -341,45 +450,20 @@ const ProjectView = (() => {
     };
   }
 
-  // ── agent registry (list_agents) — lazy fetch, cached for page lifetime ─
+  // ── agent-typed parameter default picker (sourced from agentsDraft) ────
+  //
+  // agentsDraft is this project's real sssf.config.yaml roster, already
+  // loaded eagerly when the modal opened (see loadSssfConfig) — no separate
+  // lazy fetch needed here, unlike the model picker.
 
-  async function ensureAgentsLoaded(force) {
-    if (agentsLoadAttempted && !force) return;
-    agentsLoadAttempted = true;
-    try {
-      const data = await apiCallLocal('/api/v1/command', 'POST', { type: 'list_agents', payload: {} });
-      agentsCache = Array.isArray(data) ? data : [];
-      agentsError = null;
-    } catch (e) {
-      agentsCache = agentsCache || [];
-      agentsError = (e && e.message) || 'failed to reach agent registry';
-    }
-  }
-
-  function findAgentById(id) {
-    return (agentsCache || []).find((a) => a.id === id) || null;
-  }
-
-  function slugify(str) {
-    const s = String(str || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    return s || 'agent';
-  }
-
-  function uniqueAgentId(name) {
-    const base = slugify(name);
-    const existing = new Set((agentsCache || []).map((a) => a.id));
-    if (!existing.has(base)) return base;
-    let i = 2;
-    while (existing.has(`${base}-${i}`)) i++;
-    return `${base}-${i}`;
+  function filterAgentsDraft(query) {
+    const q = (query || '').trim().toLowerCase();
+    if (!q) return agentsDraft;
+    return agentsDraft.filter((a) => (a.name || '').toLowerCase().includes(q));
   }
 
   const AGENT_RESULT_CAP = 50;
 
-  // The default-value picker for a `type: 'agent'` parameter — sourced from
-  // the Agent registry but still free text: a parameter's default may be an
-  // agent id that has no registry entry yet (that's exactly the "not yet
-  // configured" case the Agent Roles section above handles).
   function createAgentDefaultPicker(param, onChange) {
     const wrap = document.createElement('div');
     wrap.className = 'pv-agent-name-picker flex-1';
@@ -387,7 +471,7 @@ const ProjectView = (() => {
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'form-input';
-    input.placeholder = 'agent id';
+    input.placeholder = 'agent name';
     input.autocomplete = 'off';
     input.value = param.default !== undefined ? String(param.default) : '';
     wrap.appendChild(input);
@@ -396,34 +480,27 @@ const ProjectView = (() => {
     dropdown.className = 'pv-agent-dropdown hidden';
     wrap.appendChild(dropdown);
 
-    function filterAgents(query) {
-      const q = (query || '').trim().toLowerCase();
-      const list = agentsCache || [];
-      if (!q) return list;
-      return list.filter((a) =>
-        (a.name || '').toLowerCase().includes(q) || (a.id || '').toLowerCase().includes(q)
-      );
-    }
-
-    function commit(id) {
-      if (id) param.default = id; else delete param.default;
-      input.value = id || '';
+    function commit(name) {
+      if (name) param.default = name; else delete param.default;
+      input.value = name || '';
       onChange();
     }
 
     function renderDropdown() {
       dropdown.innerHTML = '';
-      if (agentsError) {
+      if (!agentsAvailable) {
         const note = document.createElement('div');
         note.className = 'pv-agent-dropdown-note';
-        note.textContent = `agent registry unavailable — type an id manually (${agentsError})`;
+        note.textContent = agentsLoadError
+          ? `agent roster unavailable — type a name manually (${agentsLoadError})`
+          : 'no sssf.config.yaml for this project — type a name manually';
         dropdown.appendChild(note);
       }
-      const matches = filterAgents(input.value);
+      const matches = filterAgentsDraft(input.value);
       if (matches.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'pv-agent-dropdown-empty';
-        empty.textContent = (agentsCache && agentsCache.length) ? 'no matches' : 'no agents registered yet — type a new id';
+        empty.textContent = (agentsDraft.length) ? 'no matches' : 'roster is empty — type a new name';
         dropdown.appendChild(empty);
         return;
       }
@@ -435,15 +512,15 @@ const ProjectView = (() => {
         nameSpan.className = 'pv-agent-option-name';
         nameSpan.textContent = a.name;
         opt.appendChild(nameSpan);
-        if (a.id !== a.name) {
-          const idSpan = document.createElement('span');
-          idSpan.className = 'pv-agent-option-id';
-          idSpan.textContent = a.id;
-          opt.appendChild(idSpan);
+        if (a.purpose) {
+          const purposeSpan = document.createElement('span');
+          purposeSpan.className = 'pv-agent-option-id';
+          purposeSpan.textContent = a.purpose;
+          opt.appendChild(purposeSpan);
         }
         opt.addEventListener('mousedown', (e) => {
           e.preventDefault();
-          commit(a.id);
+          commit(a.name);
           hideDropdown();
         });
         dropdown.appendChild(opt);
@@ -454,10 +531,8 @@ const ProjectView = (() => {
       dropdown.classList.add('hidden');
     }
 
-    input.addEventListener('focus', async () => {
-      dropdown.innerHTML = '<div class="pv-agent-dropdown-hint">loading agents…</div>';
+    input.addEventListener('focus', () => {
       dropdown.classList.remove('hidden');
-      await ensureAgentsLoaded();
       renderDropdown();
     });
 
@@ -486,11 +561,7 @@ const ProjectView = (() => {
     };
   }
 
-  // ── parameters editor (shared by an ADW's own parameters and an Agent's) ─
-  //
-  // A `type: 'agent'` row swaps its "default" field for createAgentDefaultPicker
-  // instead of a plain text input — everything else about a parameter row is
-  // identical regardless of who owns the array.
+  // ── parameters editor (ADW's own parameters[]) ──────────────────────
 
   function renderParamsList(params, container, onChange, cleanupsArr) {
     container.innerHTML = '';
@@ -555,305 +626,328 @@ const ProjectView = (() => {
     });
   }
 
-  // ── Agent Roles section (project-level Agent registry) ─────────────────
-  //
-  // Shows every Agent id referenced by a `type: 'agent'` parameter default
-  // anywhere in this project's ADWs, cross-referenced against the real Agent
-  // registry (list_agents), and lets you edit/create/delete the underlying
-  // Agent record. Agent edits are a different backend resource than the
-  // project (update_project only persists `adws`), so they save immediately
-  // via update_agent/register_agent/delete_agent rather than through the
-  // project's own dirty/save-banner flow.
+  // ── Agent Roles section (real sssf.config.yaml roster) ─────────────────
 
-  // Builds a debounced (~500ms) per-card save function that PATCHes the
-  // Agent via update_agent, with a small inline status indicator.
-  function makeAgentSaver(agent, statusEl) {
-    let timer = null;
-    function setStatus(text, cls) {
-      statusEl.textContent = text;
-      statusEl.className = 'pv-agent-save-status' + (cls ? ' ' + cls : '');
+  async function loadSssfConfig() {
+    sssfDefaults = null;
+    agentsDraft = [];
+    agentsAvailable = false;
+    agentsLoadError = null;
+    try {
+      // apiCallLocal()/apiCall() unwrap straight to `.data`, discarding the
+      // `.error` string the server attaches alongside `data: null` on the
+      // graceful "not stamped with SSSF" path — read the raw envelope here
+      // so that message actually reaches the UI instead of being swallowed.
+      const res = await fetch(`/api/v1/projects/${encodeURIComponent(currentProjectId)}/sssf-config`);
+      const envelope = await res.json().catch(() => null);
+      if (!res.ok || !envelope || envelope.success === false) {
+        agentsLoadError = (envelope && envelope.error) || `HTTP error ${res.status}`;
+        return;
+      }
+      const data = envelope.data;
+      if (!data) {
+        agentsAvailable = false;
+        agentsLoadError = envelope.error || null;
+        return;
+      }
+      sssfDefaults = data.defaults || {};
+      agentsDraft = Array.isArray(data.agents) ? JSON.parse(JSON.stringify(data.agents)) : [];
+      agentsAvailable = true;
+    } catch (e) {
+      agentsLoadError = (e && e.message) || 'failed to reach the project file API';
     }
-    function saveNow() {
-      timer = null;
-      const params = (agent.parameters || [])
-        .filter((p) => p.name && String(p.name).trim() && p.flag && String(p.flag).trim())
-        .map(buildParamPayload);
-      const payload = {
-        id: agent.id,
-        model: (agent.model || '').trim(),
-        system_prompt: agent.system_prompt || '',
-        parameters: params
-      };
-      setStatus('saving…');
-      apiCallLocal('/api/v1/command', 'POST', { type: 'update_agent', payload })
-        .then(() => setStatus('saved', 'pv-ok'))
-        .catch((e) => setStatus(`error: ${(e && e.message) || e}`, 'pv-err'));
-    }
-    return function scheduleSave() {
-      setStatus('editing…');
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(saveNow, 500);
-    };
   }
 
-  function collectReferencedAgentIds() {
-    const ids = [];
+  function collectReferencedAgentNames() {
+    const names = [];
     const seen = new Set();
     ((currentDraft && currentDraft.adws) || []).forEach((adw) => {
       (adw.parameters || []).forEach((p) => {
         if (!p || p.type !== 'agent') return;
-        const id = (p.default != null ? String(p.default) : '').trim();
-        if (id && !seen.has(id)) {
-          seen.add(id);
-          ids.push(id);
+        const name = (p.default != null ? String(p.default) : '').trim();
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          names.push(name);
         }
       });
     });
-    return ids;
+    return names;
   }
 
-  function renderConfiguredAgentCard(agent) {
+  function markAgentsDirty() {
+    agentsDirty = true;
+    const banner = document.getElementById('pv-agents-save-banner');
+    if (banner) banner.innerHTML = '';
+  }
+
+  function showAgentsBanner(msg, ok) {
+    const banner = document.getElementById('pv-agents-save-banner');
+    if (!banner) return;
+    banner.innerHTML = '';
+    const el = document.createElement('div');
+    el.className = 'pv-save-banner ' + (ok ? 'pv-ok' : 'pv-err');
+    el.textContent = msg;
+    banner.appendChild(el);
+  }
+
+  function renderToolsList(items, cls) {
+    const wrap = document.createElement('div');
+    wrap.className = 'pv-agent-badge-list';
+    (items || []).forEach((t) => {
+      const b = document.createElement('span');
+      b.className = 'tag-badge ' + (cls || 'tag-agent');
+      b.textContent = t;
+      wrap.appendChild(b);
+    });
+    if (!items || items.length === 0) {
+      const none = document.createElement('span');
+      none.className = 'pv-agent-badge-none';
+      none.textContent = '(none)';
+      wrap.appendChild(none);
+    }
+    return wrap;
+  }
+
+  function renderAgentCard(agent) {
     const card = document.createElement('div');
     card.className = 'pv-agent-card';
-    card.dataset.agentId = agent.id;
+    card.dataset.agentId = agent.name;
 
     const header = document.createElement('div');
     header.className = 'pv-agent-card-header';
     const nameEl = document.createElement('strong');
     nameEl.textContent = agent.name;
-    const statusEl = document.createElement('span');
-    statusEl.className = 'pv-agent-save-status';
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
     delBtn.className = 'pv-icon-btn';
-    delBtn.title = 'delete agent role';
+    delBtn.title = 'remove from roster';
     delBtn.textContent = '✕';
+    delBtn.addEventListener('click', () => {
+      if (!confirm(`Remove "${agent.name}" from the agent roster? This isn't written to sssf.config.yaml until you click "save agent roster".`)) return;
+      const i = agentsDraft.indexOf(agent);
+      if (i >= 0) agentsDraft.splice(i, 1);
+      markAgentsDirty();
+      renderAgentsSection();
+    });
     header.appendChild(nameEl);
-    header.appendChild(statusEl);
     header.appendChild(delBtn);
     card.appendChild(header);
 
-    const scheduleSave = makeAgentSaver(agent, statusEl);
+    const purposeInput = mkTextInput(agent.purpose || '', 'purpose (one sentence)', (v) => {
+      if (v) agent.purpose = v; else delete agent.purpose;
+      markAgentsDirty();
+    });
+    card.appendChild(mkFormGroup('purpose', purposeInput));
+
+    const row = document.createElement('div');
+    row.className = 'form-row';
 
     const modelGroup = document.createElement('div');
-    modelGroup.className = 'form-group';
+    modelGroup.className = 'form-group flex-1';
     const modelLabel = document.createElement('label');
-    modelLabel.textContent = 'model';
+    modelLabel.textContent = sssfDefaults && sssfDefaults.model ? `model (default: ${sssfDefaults.model})` : 'model';
     modelGroup.appendChild(modelLabel);
-    const picker = createModelPicker(agent, scheduleSave);
+    const picker = createModelPicker(agent, markAgentsDirty);
     agentPickerCleanups.push(picker.cleanup);
     modelGroup.appendChild(picker.el);
-    card.appendChild(modelGroup);
+    row.appendChild(modelGroup);
 
-    const promptGroup = document.createElement('div');
-    promptGroup.className = 'form-group';
-    const promptLabel = document.createElement('label');
-    promptLabel.textContent = 'system prompt';
-    const promptTa = document.createElement('textarea');
-    promptTa.className = 'form-input textarea';
-    promptTa.placeholder = 'system prompt (optional)';
-    promptTa.value = agent.system_prompt || '';
-    promptTa.addEventListener('input', () => { agent.system_prompt = promptTa.value; scheduleSave(); });
-    promptGroup.appendChild(promptLabel);
-    promptGroup.appendChild(promptTa);
-    card.appendChild(promptGroup);
-
-    const paramsSection = document.createElement('div');
-    const paramsHeader = document.createElement('div');
-    paramsHeader.className = 'pv-section-header';
-    const paramsH = document.createElement('label');
-    paramsH.textContent = 'parameters';
-    const addParamBtn = document.createElement('button');
-    addParamBtn.type = 'button';
-    addParamBtn.className = 'btn btn-secondary pv-small-btn';
-    addParamBtn.textContent = '+ parameter';
-    paramsHeader.appendChild(paramsH);
-    paramsHeader.appendChild(addParamBtn);
-    paramsSection.appendChild(paramsHeader);
-    const paramsListEl = document.createElement('div');
-    paramsListEl.className = 'pv-params-list';
-    paramsSection.appendChild(paramsListEl);
-    if (!agent.parameters) agent.parameters = [];
-    renderParamsList(agent.parameters, paramsListEl, scheduleSave, agentPickerCleanups);
-    addParamBtn.addEventListener('click', () => {
-      agent.parameters.push({ name: '', flag: '', type: 'string' });
-      renderParamsList(agent.parameters, paramsListEl, scheduleSave, agentPickerCleanups);
-      scheduleSave();
+    const thinkingSelect = document.createElement('select');
+    thinkingSelect.className = 'form-input';
+    THINKING_LEVELS.forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = t || '(default' + (sssfDefaults && sssfDefaults.thinking ? `: ${sssfDefaults.thinking}` : '') + ')';
+      if ((agent.thinking || '') === t) opt.selected = true;
+      thinkingSelect.appendChild(opt);
     });
-    card.appendChild(paramsSection);
-
-    delBtn.addEventListener('click', async () => {
-      if (!confirm(`Delete agent role "${agent.name}"? Parameters referencing this id will show it as "not yet configured" again.`)) return;
-      delBtn.disabled = true;
-      try {
-        await apiCallLocal('/api/v1/command', 'POST', { type: 'delete_agent', payload: { id: agent.id } });
-        extraAgentIds = extraAgentIds.filter((id) => id !== agent.id);
-        await ensureAgentsLoaded(true);
-        await renderAgentsSection();
-      } catch (e) {
-        statusEl.textContent = `error: ${(e && e.message) || e}`;
-        statusEl.className = 'pv-agent-save-status pv-err';
-        delBtn.disabled = false;
-      }
+    thinkingSelect.addEventListener('change', () => {
+      if (thinkingSelect.value) agent.thinking = thinkingSelect.value; else delete agent.thinking;
+      markAgentsDirty();
     });
+    row.appendChild(mkFormGroup('thinking', thinkingSelect, 'flex-1'));
+
+    const colorRow = document.createElement('div');
+    colorRow.className = 'pv-agent-color-row';
+    const colorInput = mkTextInput(agent.color || '', '#hex (optional)', (v) => {
+      if (v) agent.color = v; else delete agent.color;
+      swatch.style.background = v || 'transparent';
+      markAgentsDirty();
+    }, 'flex-1');
+    const swatch = document.createElement('span');
+    swatch.className = 'pv-agent-color-swatch';
+    swatch.style.background = agent.color || 'transparent';
+    colorRow.appendChild(swatch);
+    colorRow.appendChild(colorInput);
+    row.appendChild(mkFormGroup('color', colorRow, 'flex-1'));
+
+    card.appendChild(row);
+
+    const toolsRow = document.createElement('div');
+    toolsRow.className = 'form-row';
+    toolsRow.appendChild(mkFormGroup('tools', renderToolsList(agent.tools), 'flex-1'));
+    toolsRow.appendChild(mkFormGroup('writes', renderToolsList(agent.writes, 'tag-badge'), 'flex-1'));
+    card.appendChild(toolsRow);
+    const toolsNote = document.createElement('div');
+    toolsNote.className = 'pv-agent-readonly-note';
+    toolsNote.textContent = 'tools / writes / harness_engineering are read-only here — edit sssf.config.yaml directly for those.';
+    card.appendChild(toolsNote);
+
+    const promptsRow = document.createElement('div');
+    promptsRow.className = 'pv-agent-prompts-row';
+    const sysPath = agent.prompt_engineering && agent.prompt_engineering.system;
+    const usrPath = agent.prompt_engineering && agent.prompt_engineering.user;
+    promptsRow.appendChild(createFileEditor(() => sysPath, 'system prompt'));
+    promptsRow.appendChild(createFileEditor(() => usrPath, 'user prompt'));
+    card.appendChild(promptsRow);
 
     return card;
   }
 
-  function renderUnconfiguredAgentCard(id) {
-    const card = document.createElement('div');
-    card.className = 'pv-agent-card pv-agent-card-unconfigured';
-    card.dataset.agentId = id;
-
-    const header = document.createElement('div');
-    header.className = 'pv-agent-card-header';
-    const nameEl = document.createElement('strong');
-    nameEl.textContent = id;
+  function renderUnregisteredAgentRow(name) {
+    const row = document.createElement('div');
+    row.className = 'pv-agent-unregistered-row';
+    const label = document.createElement('span');
+    label.textContent = name;
     const tag = document.createElement('span');
     tag.className = 'pv-agent-tag';
-    tag.textContent = 'not yet configured';
-    header.appendChild(nameEl);
-    header.appendChild(tag);
-    card.appendChild(header);
-
-    const footer = document.createElement('div');
-    footer.className = 'pv-agent-card-footer';
-    const createBtn = document.createElement('button');
-    createBtn.type = 'button';
-    createBtn.className = 'btn btn-secondary pv-small-btn';
-    createBtn.textContent = 'Create Agent Role';
-    const statusEl = document.createElement('span');
-    statusEl.className = 'pv-agent-save-status';
-    createBtn.addEventListener('click', async () => {
-      createBtn.disabled = true;
-      statusEl.textContent = 'creating…';
-      try {
-        // The referenced value already IS the id (it's a raw CLI flag
-        // value, e.g. `--agent builder`) — no slugify/uniqueness pass
-        // needed, unlike the free-text "+ new agent role" flow below.
-        await apiCallLocal('/api/v1/command', 'POST', { type: 'register_agent', payload: { id, name: id } });
-        await ensureAgentsLoaded(true);
-        await renderAgentsSection();
-      } catch (e) {
-        statusEl.textContent = `error: ${(e && e.message) || e}`;
-        statusEl.className = 'pv-agent-save-status pv-err';
-        createBtn.disabled = false;
-      }
+    tag.textContent = 'referenced, not in roster';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-secondary pv-small-btn';
+    addBtn.textContent = '+ add to roster';
+    addBtn.addEventListener('click', () => {
+      agentsDraft.push({ name, purpose: '' });
+      markAgentsDirty();
+      renderAgentsSection();
     });
-    footer.appendChild(createBtn);
-    footer.appendChild(statusEl);
-    card.appendChild(footer);
-
-    return card;
+    row.appendChild(label);
+    row.appendChild(tag);
+    row.appendChild(addBtn);
+    return row;
   }
 
-  function renderDraftAgentCard(draft) {
-    const card = document.createElement('div');
-    card.className = 'pv-agent-card pv-agent-card-draft';
-
+  function renderNewAgentDraftRow() {
+    const row = document.createElement('div');
+    row.className = 'pv-agent-card pv-agent-card-draft';
     const header = document.createElement('div');
     header.className = 'pv-agent-card-header';
-    const nameInput = mkTextInput(draft.name || '', 'agent role name', (v) => { draft.name = v; }, 'flex-1');
+    const nameInput = mkTextInput(newAgentDraft.name || '', 'agent name', (v) => { newAgentDraft.name = v; });
     const discardBtn = document.createElement('button');
     discardBtn.type = 'button';
     discardBtn.className = 'pv-icon-btn';
     discardBtn.title = 'discard';
     discardBtn.textContent = '✕';
     discardBtn.addEventListener('click', () => {
-      pendingAgentDrafts = pendingAgentDrafts.filter((d) => d !== draft);
+      newAgentDraft = null;
       renderAgentsSection();
     });
     header.appendChild(nameInput);
     header.appendChild(discardBtn);
-    card.appendChild(header);
+    row.appendChild(header);
 
     const footer = document.createElement('div');
     footer.className = 'pv-agent-card-footer';
-    const createBtn = document.createElement('button');
-    createBtn.type = 'button';
-    createBtn.className = 'btn btn-secondary pv-small-btn';
-    createBtn.textContent = 'Create Agent Role';
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'btn btn-secondary pv-small-btn';
+    addBtn.textContent = 'Add to Roster';
     const statusEl = document.createElement('span');
     statusEl.className = 'pv-agent-save-status';
-    createBtn.addEventListener('click', async () => {
-      const name = (draft.name || '').trim();
+    addBtn.addEventListener('click', () => {
+      const name = (newAgentDraft.name || '').trim();
       if (!name) {
         statusEl.textContent = 'name required';
         statusEl.className = 'pv-agent-save-status pv-err';
         return;
       }
-      createBtn.disabled = true;
-      statusEl.textContent = 'creating…';
-      statusEl.className = 'pv-agent-save-status';
-      try {
-        const id = uniqueAgentId(name);
-        await apiCallLocal('/api/v1/command', 'POST', { type: 'register_agent', payload: { id, name } });
-        pendingAgentDrafts = pendingAgentDrafts.filter((d) => d !== draft);
-        extraAgentIds.push(id);
-        await ensureAgentsLoaded(true);
-        await renderAgentsSection();
-      } catch (e) {
-        statusEl.textContent = `error: ${(e && e.message) || e}`;
+      if (agentsDraft.some((a) => a.name === name)) {
+        statusEl.textContent = 'an agent with this name already exists';
         statusEl.className = 'pv-agent-save-status pv-err';
-        createBtn.disabled = false;
+        return;
       }
+      agentsDraft.push({ name, purpose: '' });
+      newAgentDraft = null;
+      markAgentsDirty();
+      renderAgentsSection();
     });
-    footer.appendChild(createBtn);
+    footer.appendChild(addBtn);
     footer.appendChild(statusEl);
-    card.appendChild(footer);
-
-    return card;
+    row.appendChild(footer);
+    return row;
   }
 
-  // Renders the top "Agent Roles" section. The Agent registry is only
-  // fetched when there's actually something to cross-reference (a
-  // referenced id, an extra/just-created id, or a draft-in-progress) — a
-  // project with no agent-type parameters yet costs nothing extra to open,
-  // and "+ new agent role" / picking a parameter's type as "agent" both
-  // trigger the fetch on demand from there.
-  async function renderAgentsSection() {
+  async function handleSaveAgentsRoster() {
+    const banner = document.getElementById('pv-agents-save-banner');
+    if (banner) banner.innerHTML = '';
+
+    const seen = new Set();
+    for (const a of agentsDraft) {
+      const name = (a.name || '').trim();
+      if (!name) {
+        showAgentsBanner('every agent needs a non-empty name.', false);
+        return;
+      }
+      if (seen.has(name)) {
+        showAgentsBanner(`duplicate agent name "${name}" — names must be unique.`, false);
+        return;
+      }
+      seen.add(name);
+    }
+
+    const saveBtn = document.getElementById('pv-agents-save-btn');
+    if (saveBtn) saveBtn.disabled = true;
+    try {
+      await apiCallLocal(`/api/v1/projects/${encodeURIComponent(currentProjectId)}/sssf-config`, 'PUT', { agents: agentsDraft });
+      agentsDirty = false;
+      showAgentsBanner('saved.', true);
+      await loadSssfConfig();
+      renderAgentsSection();
+    } catch (err) {
+      showAgentsBanner(`save failed: ${(err && err.message) || err}`, false);
+    } finally {
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+
+  function renderAgentsSection() {
     const listEl = document.getElementById('pv-agent-roles-list');
     if (!listEl) return;
     agentPickerCleanups.forEach((fn) => fn());
     agentPickerCleanups = [];
-
-    const referenced = collectReferencedAgentIds();
-    const needsRegistry = referenced.length > 0 || extraAgentIds.length > 0 || pendingAgentDrafts.length > 0;
-    if (needsRegistry) await ensureAgentsLoaded();
-
     listEl.innerHTML = '';
 
-    if (agentsError && needsRegistry) {
-      const note = document.createElement('div');
-      note.className = 'pv-agent-registry-note';
-      note.textContent = `agent registry unavailable — showing ids only (${agentsError})`;
-      listEl.appendChild(note);
-    }
+    const saveRow = document.getElementById('pv-agents-save-row');
+    const addBtn = document.getElementById('pv-add-agent-btn');
 
-    const allIds = [];
-    const seen = new Set();
-    referenced.concat(extraAgentIds).forEach((id) => {
-      if (!seen.has(id)) {
-        seen.add(id);
-        allIds.push(id);
-      }
-    });
-
-    if (allIds.length === 0 && pendingAgentDrafts.length === 0) {
+    if (!agentsAvailable) {
       const empty = document.createElement('div');
       empty.className = 'pv-empty';
-      empty.textContent = "no agent roles referenced yet — give a workflow parameter type \"agent\", or create one below.";
+      empty.textContent = agentsLoadError
+        ? `agent roster unavailable — ${agentsLoadError}`
+        : "no adws/adw_sssf_config/sssf.config.yaml found for this project — agent roles can't be edited until SSSF is set up.";
+      listEl.appendChild(empty);
+      if (saveRow) saveRow.classList.add('hidden');
+      if (addBtn) addBtn.classList.add('hidden');
+      return;
+    }
+    if (saveRow) saveRow.classList.remove('hidden');
+    if (addBtn) addBtn.classList.remove('hidden');
+
+    const referenced = collectReferencedAgentNames();
+    const rosterNames = new Set(agentsDraft.map((a) => a.name));
+    const unregistered = referenced.filter((n) => !rosterNames.has(n));
+    unregistered.forEach((name) => listEl.appendChild(renderUnregisteredAgentRow(name)));
+
+    if (agentsDraft.length === 0 && !newAgentDraft && unregistered.length === 0) {
+      const empty = document.createElement('div');
+      empty.className = 'pv-empty';
+      empty.textContent = 'no agents in the roster yet.';
       listEl.appendChild(empty);
     }
 
-    allIds.forEach((id) => {
-      const agent = findAgentById(id);
-      listEl.appendChild(agent ? renderConfiguredAgentCard(agent) : renderUnconfiguredAgentCard(id));
-    });
-
-    pendingAgentDrafts.forEach((draft) => {
-      listEl.appendChild(renderDraftAgentCard(draft));
-    });
+    agentsDraft.forEach((agent) => listEl.appendChild(renderAgentCard(agent)));
+    if (newAgentDraft) listEl.appendChild(renderNewAgentDraftRow());
   }
 
   // ── Diagram view (workflow-diagram.js) ──────────────────────────────
@@ -887,7 +981,7 @@ const ProjectView = (() => {
     }
     window.WorkflowDiagram.render(diagEl, currentDraft, {
       onSelectAdw: (adwId) => { switchAdwView('list'); focusAdwCardById(adwId); },
-      onSelectAgent: (id) => { focusAgentCardById(id); },
+      onSelectAgent: (name) => { focusAgentCardById(name); },
       onAddWorkflow: () => addNewWorkflow(),
       onAddAgent: () => addNewAgentDraft()
     });
@@ -909,10 +1003,10 @@ const ProjectView = (() => {
     flashCard(card);
   }
 
-  function focusAgentCardById(id) {
+  function focusAgentCardById(name) {
     const listEl = document.getElementById('pv-agent-roles-list');
     if (!listEl) return;
-    const card = Array.from(listEl.querySelectorAll('.pv-agent-card')).find((c) => c.dataset.agentId === id);
+    const card = Array.from(listEl.querySelectorAll('.pv-agent-card')).find((c) => c.dataset.agentId === name);
     if (!card) return;
     card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     flashCard(card);
@@ -938,16 +1032,14 @@ const ProjectView = (() => {
   }
 
   // Shared by the "+ new agent role" button and the diagram's "+ new agent
-  // role" node. The Agent Roles section is always visible (not view-toggled)
-  // so this just adds the draft card and scrolls to it.
+  // role" node.
   function addNewAgentDraft() {
-    pendingAgentDrafts.push({ name: '' });
-    renderAgentsSection().then(() => {
-      const listEl = document.getElementById('pv-agent-roles-list');
-      const drafts = listEl ? listEl.querySelectorAll('.pv-agent-card-draft') : [];
-      const last = drafts[drafts.length - 1];
-      if (last) last.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    });
+    if (!agentsAvailable) return;
+    newAgentDraft = { name: '' };
+    renderAgentsSection();
+    const listEl = document.getElementById('pv-agent-roles-list');
+    const draft = listEl ? listEl.querySelector('.pv-agent-card-draft') : null;
+    if (draft) draft.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   // ── ADW card ─────────────────────────────────────────────────────────
@@ -1009,6 +1101,7 @@ const ProjectView = (() => {
 
     const pathInput = mkTextInput(adw.path, 'e.g. adws/build_feature.py', (v) => { adw.path = v; markDirty(); });
     body.appendChild(mkFormGroup('script path (within project)', pathInput));
+    body.appendChild(createFileEditor(() => adw.path, 'script'));
 
     const modelGroup = document.createElement('div');
     modelGroup.className = 'form-group';
@@ -1229,10 +1322,15 @@ const ProjectView = (() => {
             <hr class="modal-divider" />
             <div id="pv-agents-section">
               <div class="pv-section-header">
-                <h4>agent roles</h4>
-                <button type="button" class="btn btn-secondary pv-small-btn" id="pv-add-agent-btn">+ new agent role</button>
+                <h4>agent roles (sssf.config.yaml)</h4>
+                <button type="button" class="btn btn-secondary pv-small-btn hidden" id="pv-add-agent-btn">+ new agent role</button>
               </div>
               <div class="pv-agent-roles-list" id="pv-agent-roles-list"></div>
+              <div id="pv-agents-save-banner"></div>
+              <div class="pv-agents-save-row hidden" id="pv-agents-save-row">
+                <div class="flex-spacer"></div>
+                <button type="button" class="btn btn-primary pv-small-btn" id="pv-agents-save-btn">save agent roster</button>
+              </div>
             </div>
             <hr class="modal-divider" />
             <div class="pv-section-header">
@@ -1268,6 +1366,9 @@ const ProjectView = (() => {
     const addAgentRoleBtn = document.getElementById('pv-add-agent-btn');
     if (addAgentRoleBtn) addAgentRoleBtn.addEventListener('click', addNewAgentDraft);
 
+    const agentsSaveBtn = document.getElementById('pv-agents-save-btn');
+    if (agentsSaveBtn) agentsSaveBtn.addEventListener('click', handleSaveAgentsRoster);
+
     const viewToggle = document.getElementById('pv-adw-view-toggle');
     if (viewToggle) {
       viewToggle.querySelectorAll('.pv-view-toggle-btn').forEach((btn) => {
@@ -1295,11 +1396,13 @@ const ProjectView = (() => {
     const proj = projects.find((p) => p.id === projectId);
 
     currentProjectId = projectId;
-    extraAgentIds = [];
-    pendingAgentDrafts = [];
+    newAgentDraft = null;
+    agentsDirty = false;
     switchAdwView('list');
     const banner = document.getElementById('pv-save-banner');
     if (banner) banner.innerHTML = '';
+    const agentsBanner = document.getElementById('pv-agents-save-banner');
+    if (agentsBanner) agentsBanner.innerHTML = '';
 
     if (!proj) {
       const metaEl = document.getElementById('pv-meta');
@@ -1325,7 +1428,8 @@ const ProjectView = (() => {
 
     renderMeta(currentDraft);
     renderAdwList();
-    await renderAgentsSection();
+    await loadSssfConfig();
+    renderAgentsSection();
     modal.classList.remove('hidden');
   }
 

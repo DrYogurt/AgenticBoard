@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { execFile } from 'child_process';
 import multer from 'multer';
+import * as YAML from 'yaml';
 import { DeterministicEngine } from './core/engine';
 import { BoardEvent, Project, Task } from './core/types';
 import { openTraceDb } from './core/trace';
@@ -456,6 +457,244 @@ export class BoardServer {
           });
         }
         res.status(201).json({ success: true, data: stored });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    // Generic project-file editor: reads/writes any text file within a
+    // project's own directory (workflow scripts at adw.path, SSSF's
+    // per-agent system.md/user.md prompt files, etc). Confined to the
+    // project root the same way document uploads are, via path.resolve +
+    // prefix-check rather than trusting the client-supplied relative path.
+    const MAX_EDITABLE_FILE_BYTES = 2 * 1024 * 1024;
+
+    const resolveConfinedFilePath = (projectPath: string, relPath: string): { filePath: string } | { error: string } => {
+      if (!relPath || typeof relPath !== 'string') return { error: 'path is required' };
+      const cleaned = relPath.replace(/\0/g, '');
+      const resolvedRoot = path.resolve(projectPath);
+      const candidate = path.resolve(resolvedRoot, cleaned);
+      if (candidate !== resolvedRoot && !candidate.startsWith(resolvedRoot + path.sep)) {
+        return { error: `path '${relPath}' escapes the project directory` };
+      }
+      return { filePath: candidate };
+    };
+
+    this.app.get('/api/v1/projects/:id/file', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const relPath = String(req.query.path || '');
+        const pathResolved = resolveConfinedFilePath(resolved.projectPath, relPath);
+        if ('error' in pathResolved) {
+          res.status(400).json({ success: false, error: pathResolved.error });
+          return;
+        }
+        if (!fs.existsSync(pathResolved.filePath)) {
+          res.json({ success: true, data: { path: relPath, content: null, exists: false } });
+          return;
+        }
+        const stat = await fs.promises.stat(pathResolved.filePath);
+        if (!stat.isFile()) {
+          res.status(400).json({ success: false, error: `'${relPath}' is not a file` });
+          return;
+        }
+        if (stat.size > MAX_EDITABLE_FILE_BYTES) {
+          res.status(400).json({ success: false, error: `file too large to edit (${stat.size} bytes, limit ${MAX_EDITABLE_FILE_BYTES})` });
+          return;
+        }
+        const content = await fs.promises.readFile(pathResolved.filePath, 'utf-8');
+        res.json({ success: true, data: { path: relPath, content, exists: true } });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    this.app.put('/api/v1/projects/:id/file', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const relPath = String((req.body && req.body.path) || '');
+        const content = req.body && typeof req.body.content === 'string' ? req.body.content : null;
+        if (content === null) {
+          res.status(400).json({ success: false, error: 'content (string) is required' });
+          return;
+        }
+        if (Buffer.byteLength(content, 'utf-8') > MAX_EDITABLE_FILE_BYTES) {
+          res.status(400).json({ success: false, error: `content too large to save (limit ${MAX_EDITABLE_FILE_BYTES} bytes)` });
+          return;
+        }
+        const pathResolved = resolveConfinedFilePath(resolved.projectPath, relPath);
+        if ('error' in pathResolved) {
+          res.status(400).json({ success: false, error: pathResolved.error });
+          return;
+        }
+        await fs.promises.mkdir(path.dirname(pathResolved.filePath), { recursive: true });
+        await fs.promises.writeFile(pathResolved.filePath, content, 'utf-8');
+        res.json({ success: true, data: { path: relPath, saved: true } });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    // SSSF agent roster: adws/adw_sssf_config/sssf.config.yaml. This is the
+    // REAL source of truth for a project's agent roles (name/model/thinking/
+    // prompt files) — not a board-owned concept. Reads/writes go through the
+    // `yaml` package's Document API (not a parse-then-restringify round trip)
+    // specifically because this file is heavily hand-commented; a naive
+    // parse/serialize cycle would silently discard every comment. Editing an
+    // existing agent's scalar fields (model/thinking/color/purpose) mutates
+    // that agent's own YAML node in place, so its comments and everything
+    // else in the file survive untouched.
+    const SSSF_CONFIG_REL_PATH = path.join('adws', 'adw_sssf_config', 'sssf.config.yaml');
+    const SSSF_EDITABLE_AGENT_FIELDS = ['model', 'thinking', 'color', 'purpose'] as const;
+
+    function promptPathsForAgent(dataDir: string, name: string): { system: string; user: string } {
+      return {
+        system: path.posix.join(dataDir, 'prompt_engineering', name, 'system.md'),
+        user: path.posix.join(dataDir, 'prompt_engineering', name, 'user.md')
+      };
+    }
+
+    this.app.get('/api/v1/projects/:id/sssf-config', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const configPath = path.join(resolved.projectPath, SSSF_CONFIG_REL_PATH);
+        if (!fs.existsSync(configPath)) {
+          res.json({ success: true, data: null, error: `no ${SSSF_CONFIG_REL_PATH.replace(/\\/g, '/')} found — has this project been stamped with SSSF?` });
+          return;
+        }
+        let doc: YAML.Document;
+        try {
+          doc = YAML.parseDocument(await fs.promises.readFile(configPath, 'utf-8'));
+        } catch (e: any) {
+          res.json({ success: true, data: null, error: `failed to parse sssf.config.yaml: ${(e && e.message) || e}` });
+          return;
+        }
+        const defaults = (doc.get('defaults') as any)?.toJSON?.() ?? doc.get('defaults') ?? {};
+        const observability = (doc.get('observability') as any)?.toJSON?.() ?? doc.get('observability') ?? {};
+        const agentsNode = doc.get('agents', true);
+        const agents = YAML.isSeq(agentsNode) ? agentsNode.items.map((item) => (YAML.isMap(item) ? item.toJSON() : item)) : [];
+        res.json({ success: true, data: { defaults, observability, agents } });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    this.app.put('/api/v1/projects/:id/sssf-config', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const resolved = await resolveProjectPath(req.params.id);
+        if ('error' in resolved) {
+          res.status(404).json({ success: false, error: resolved.error });
+          return;
+        }
+        const payloadAgents = Array.isArray(req.body && req.body.agents) ? req.body.agents : null;
+        if (!payloadAgents) {
+          res.status(400).json({ success: false, error: 'agents (array) is required' });
+          return;
+        }
+        for (const a of payloadAgents) {
+          if (!a || typeof a.name !== 'string' || !a.name.trim()) {
+            res.status(400).json({ success: false, error: 'every agent needs a non-empty name' });
+            return;
+          }
+        }
+
+        const configPath = path.join(resolved.projectPath, SSSF_CONFIG_REL_PATH);
+        if (!fs.existsSync(configPath)) {
+          res.status(404).json({ success: false, error: `no ${SSSF_CONFIG_REL_PATH.replace(/\\/g, '/')} found — has this project been stamped with SSSF?` });
+          return;
+        }
+        const raw = await fs.promises.readFile(configPath, 'utf-8');
+        let doc: YAML.Document;
+        try {
+          doc = YAML.parseDocument(raw);
+        } catch (e: any) {
+          res.status(400).json({ success: false, error: `failed to parse sssf.config.yaml: ${(e && e.message) || e}` });
+          return;
+        }
+
+        const dataDirNode = doc.getIn(['defaults', 'data_dir']);
+        const dataDir = typeof dataDirNode === 'string' && dataDirNode ? dataDirNode : 'adws/adw_data';
+
+        let agentsSeq = doc.get('agents', true) as YAML.YAMLSeq | undefined;
+        if (!agentsSeq || !YAML.isSeq(agentsSeq)) {
+          agentsSeq = doc.createNode([]) as YAML.YAMLSeq;
+          doc.set('agents', agentsSeq);
+        }
+
+        const byName = new Map<string, YAML.YAMLMap>();
+        for (const item of agentsSeq.items) {
+          if (YAML.isMap(item)) {
+            const name = item.get('name');
+            if (typeof name === 'string') byName.set(name, item);
+          }
+        }
+
+        const newlyCreated: Array<{ name: string; system: string; user: string }> = [];
+        const resultItems: YAML.YAMLMap[] = [];
+        const payloadByName = new Map<string, any>(payloadAgents.map((a: any) => [a.name, a]));
+
+        // Preserve original file order for agents that survive; only their
+        // own node is mutated in place, so untouched agents (and every
+        // comment attached to them) are byte-identical.
+        for (const item of agentsSeq.items) {
+          if (!YAML.isMap(item)) continue;
+          const name = item.get('name');
+          if (typeof name !== 'string') continue;
+          const payloadAgent = payloadByName.get(name);
+          if (!payloadAgent) continue; // omitted from payload => deleted
+          for (const field of SSSF_EDITABLE_AGENT_FIELDS) {
+            const value = payloadAgent[field];
+            if (value === undefined || value === null || value === '') {
+              item.delete(field);
+            } else {
+              item.set(field, value);
+            }
+          }
+          resultItems.push(item);
+        }
+
+        // Anything in the payload not matched above is a brand-new agent.
+        for (const payloadAgent of payloadAgents) {
+          if (byName.has(payloadAgent.name)) continue;
+          const prompts = promptPathsForAgent(dataDir, payloadAgent.name);
+          const fields: Record<string, any> = { name: payloadAgent.name };
+          for (const field of SSSF_EDITABLE_AGENT_FIELDS) {
+            if (payloadAgent[field]) fields[field] = payloadAgent[field];
+          }
+          fields.prompt_engineering = { system: prompts.system, user: prompts.user };
+          const node = doc.createNode(fields) as YAML.YAMLMap;
+          resultItems.push(node);
+          newlyCreated.push({ name: payloadAgent.name, ...prompts });
+        }
+
+        agentsSeq.items = resultItems;
+        await fs.promises.writeFile(configPath, doc.toString(), 'utf-8');
+
+        // A new agent's prompt files must exist before the UI can edit them.
+        for (const created of newlyCreated) {
+          for (const relPath of [created.system, created.user]) {
+            const filePath = path.resolve(resolved.projectPath, relPath);
+            if (!filePath.startsWith(path.resolve(resolved.projectPath) + path.sep)) continue;
+            if (fs.existsSync(filePath)) continue;
+            await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+            const label = relPath.endsWith('system.md') ? 'System' : 'User';
+            await fs.promises.writeFile(filePath, `# ${created.name} — ${label} Prompt\n\n`, 'utf-8');
+          }
+        }
+
+        res.json({ success: true, data: { saved: true } });
       } catch (err) {
         next(err);
       }

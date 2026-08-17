@@ -7,7 +7,7 @@ should show up in the other:
 | Layer | Location | Runs with |
 | --- | --- | --- |
 | DOM / module behaviour | `website/tests/ui.test.ts`, `website/tests/agent-diagram.test.ts` | `cd website && npm test` |
-| API endpoints + persistence | `server/tests/features.test.ts`, `server/tests/agents.test.ts` | `cd server && npx vitest run tests/features.test.ts tests/agents.test.ts` |
+| API endpoints + persistence | `server/tests/features.test.ts`, `server/tests/project-files.test.ts` | `cd server && npx vitest run tests/features.test.ts tests/project-files.test.ts` |
 
 Check IDs (`EX-1`, `WF-3`, …) are shared between this document and the test
 names. When you change a feature, update both sides.
@@ -23,14 +23,16 @@ verifies them. Don't read a green test run as covering them:
 | `MD-5` | jsdom has no layout engine, so caret/pixel alignment can't be measured. The suite substitutes a structural proxy (one source line renders as exactly one output line). |
 | `DU-5` | Synthesizing a genuine file drop. |
 | `WF-11`, `WF-13` | Covered structurally, but the real degraded/conflict UX is worth seeing. |
-| `AG-5` | Deletion goes through a native `confirm()` dialog, which browser automation must never trigger (see the rules below) — the suite stubs `window.confirm`, a browser pass has to actually see the prompt. |
+| `AG-4` | Deletion goes through a native `confirm()` dialog, which browser automation must never trigger (see the rules below) — the suite stubs `window.confirm`, a browser pass has to actually see the prompt. |
 | `RZ-1`, `RZ-2` | jsdom has no layout engine, so a `resize: both` handle can't actually be dragged. The suite only asserts the CSS declaration exists. |
 
 `DU-8` and `DU-9` are deliberately server-side checks — the dedup and
 path-sanitizing logic lives in the upload handler, so they're asserted in
-`server/tests/features.test.ts`, not the DOM suite. `AG-2`/`AG-3`/`AG-4`'s
-`register_agent`/`update_agent` persistence is likewise asserted server-side
-in `server/tests/agents.test.ts`.
+`server/tests/features.test.ts`, not the DOM suite. The actual
+`sssf.config.yaml` comment-preservation guarantee (`AG-3`'s save) is likewise
+asserted server-side in `server/tests/project-files.test.ts` — the DOM suite
+only checks that the right PUT payload gets sent, not that the file on disk
+keeps its comments.
 
 ---
 
@@ -156,14 +158,15 @@ parameters**. Typing changes their values without console errors. There is
 **no separate "agents" field** — agent selection lives inside `parameters[]`
 (see WF-6).
 
-### WF-6 — An `agent`-typed parameter swaps in an agent-id picker
+### WF-6 — An `agent`-typed parameter swaps in an agent-name picker
 Add a parameter, set its type to `agent`.
 **Pass:** the "default" field switches from plain text to a searchable
-picker (`.pv-agent-name-picker`) sourced from the `Agent` registry, showing
-each candidate's name and id. Switching the type back to `string`/`number`/
-`boolean` reverts it to plain text without losing the other fields (name,
-flag, label). This is the same mechanism SSSF's own `--agent` CLI flag
-already uses — e.g. a real `adw_prompt.py` ADW's `agent` parameter.
+picker (`.pv-agent-name-picker`) sourced from the project's own
+`sssf.config.yaml` roster (see section 5), showing each candidate's name and
+purpose. Switching the type back to `string`/`number`/`boolean` reverts it to
+plain text without losing the other fields (name, flag, label). This is the
+same mechanism SSSF's own `--agent` CLI flag already uses — e.g. a real
+`adw_prompt.py` ADW's `agent` parameter.
 
 ### WF-7 — Add and remove a parameter
 Add a parameter with name `branch`, flag `--branch`, type `string`.
@@ -355,71 +358,135 @@ Do **not** let an `alert()` actually fire.
 
 ## 5. Agent roles (new)
 
-The **Agent** entity (`register_agent`/`update_agent`/`delete_agent`/
-`list_agents`) is a workspace-wide registry, distinct from a project. An
-ADW references an agent role via a `parameters[]` entry with `type: 'agent'`,
-whose `default` holds the Agent's id — the same convention SSSF's own
-`--agent` CLI flag already uses (see WF-6). Nothing on the backend enforces
-that a given id matches a real registered `Agent`. This section of the
-project view exists to make that link visible and editable. Open the `demo`
-project view; `#pv-agents-section` sits **above** `#pv-adw-list`
-(Hamburger → *Projects* → click a row, per WF-4).
+There is deliberately **no board-owned "Agent" entity**. A project's real
+agent roster lives in its own `adws/adw_sssf_config/sssf.config.yaml` — the
+project view reads and writes that actual file (`GET`/`PUT
+/api/v1/projects/:id/sssf-config`), preserving its hand-written comments on
+every edit (via the `yaml` npm package's Document API, not a naive
+parse-and-restringify round trip). An ADW references an agent role via a
+`parameters[]` entry with `type: 'agent'`, whose `default` is the agent's
+`name` in that roster — the same convention SSSF's own `--agent` CLI flag
+already uses.
 
-### AG-1 — Agent Roles section exists above the workflow list
-**Pass:** `#pv-agents-section` (header "agent roles", `#pv-add-agent-btn`)
-renders before the "workflows (adws)" header in DOM order. With no ADW
-parameter of type `agent`, `#pv-agent-roles-list` shows an explanatory empty
-state rather than nothing.
-
-### AG-2 — An ADW-referenced but unregistered agent id shows "not yet configured"
-Add an ADW parameter with `type: agent` and a default id with no matching
-`Agent` record yet (e.g. `coder`, per WF-6).
-**Pass:** a dashed-border card (`.pv-agent-card-unconfigured`) appears in the
-Agent Roles section showing just the id, a "not yet configured" tag, and a
-**Create Agent Role** button.
-
-### AG-3 — Create Agent Role promotes it to a full editable card
-Click **Create Agent Role** on the `coder` card.
-**Pass:** it's replaced by a solid-border card with a **model picker**
-(same searchable provider/model UI as an ADW's), a **system prompt**
-`<textarea>`, and a **parameters** list with the same add/remove UI as ADW
-parameters. This is a real `register_agent` call — confirm server-side:
+The `demo` project from section 0 has no SSSF roster, which is itself worth
+checking (AG-1) — but to exercise the rest of this section, stamp a minimal
+one into it first:
 ```bash
-curl -s -X POST localhost:3200/api/v1/command -H 'Content-Type: application/json' \
-  -d '{"type":"list_agents","payload":{}}' | python3 -m json.tool
+mkdir -p /tmp/ab-verify-proj/adws/adw_sssf_config
+cat > /tmp/ab-verify-proj/adws/adw_sssf_config/sssf.config.yaml <<'EOF'
+# sssf.config.yaml — minimal fixture for browser verification.
+defaults:
+  model: google/gemini-3.7-flash   # inline comment — must survive every save
+  thinking: medium
+agents:
+  - name: planner
+    purpose: Turn a request into a plan.
+    prompt_engineering:
+      system: adws/adw_data/prompt_engineering/planner/system.md
+      user: adws/adw_data/prompt_engineering/planner/user.md
+EOF
+mkdir -p /tmp/ab-verify-proj/adws/adw_data/prompt_engineering/planner
+echo "# Planner system prompt" > /tmp/ab-verify-proj/adws/adw_data/prompt_engineering/planner/system.md
+echo "# Planner user prompt" > /tmp/ab-verify-proj/adws/adw_data/prompt_engineering/planner/user.md
+```
+Reopen the `demo` project view (close and reopen, or reload) after creating
+this so the section picks it up.
+
+### AG-1 — Agent Roles section exists above the workflow list; degrades gracefully
+Open the project view. **Pass:** `#pv-agents-section` (header "agent roles
+(sssf.config.yaml)") renders before the "workflows (adws)" header in DOM
+order. **Before** stamping the fixture above, `#pv-agent-roles-list` shows a
+message that SSSF hasn't been set up, and `#pv-add-agent-btn` / the
+save-roster row are hidden — there's nothing to write into. **After**
+stamping it, the `planner` roster entry renders as an editable card.
+
+### AG-2 — Editing an agent's model/thinking/color/purpose
+Expand the `planner` card.
+**Pass:** editable fields exist for **model** (searchable picker, same UX as
+an ADW's), **thinking** (`off/minimal/low/medium/high/xhigh/max`, plus a
+"(default: …)" option meaning "inherit `defaults.thinking`"), **color**
+(hex text input with a live swatch preview), and **purpose**. `tools`,
+`writes`, and `harness_engineering` render as a read-only badge list with a
+note that they're not editable here.
+
+### AG-3 — Saving the roster preserves the file's comments
+Change `planner`'s model, click **save agent roster**.
+**Pass:** `#pv-agents-save-banner` reports success, independently of
+`#pv-save-banner`/`#pv-save-btn` (the roster is a different backend resource
+— `update_project` has no field for it). Confirm on disk that the edit
+landed **and every comment survived**:
+```bash
+grep -c '#' <project-path>/adws/adw_sssf_config/sssf.config.yaml
+grep 'model:' <project-path>/adws/adw_sssf_config/sssf.config.yaml | head -3
 ```
 
-### AG-4 — Edits save independently of the project's own Save button
-Set a model, type a system prompt, add a parameter on the `coder` card.
-**Pass:** a small inline status next to the card header cycles
-`editing…` → `saving…` → `saved` **without** touching `#pv-save-banner` or
-requiring `#pv-save-btn` — Agent edits are a different backend resource
-(`update_agent`) than the project's own `adws` (`update_project`). Reload and
-reopen the project view: the model/prompt/parameters persisted.
-
-### AG-5 — Deleting a still-referenced agent role reverts, it doesn't vanish
-Click the card's delete (`✕`) button.
+### AG-4 — Removing a roster agent
+Click a card's delete (`✕`) button.
 **Pass:** a `confirm()` dialog appears — **let it appear, don't dismiss it via
 automation** (native dialogs block the extension; see the rules above). If you
 must verify this check unattended, stub it first:
 ```js
 window.confirm = () => true;
 ```
-Confirming sends `delete_agent`; because `coder` is still referenced by the
-ADW's `agent`-typed parameter, the card reverts to the "not yet configured"
-state from AG-2 rather than disappearing — the parameter's `default: "coder"`
-is untouched.
+Confirming removes the card immediately (staged locally); if that agent's
+`name` is still referenced by an ADW's `type: agent` parameter, it
+immediately reappears as a "referenced, not in roster" row instead of
+vanishing. Nothing is written to disk until **save agent roster** is clicked.
 
-### AG-6 — "+ new agent role" registers a standalone agent
-Click `#pv-add-agent-btn`, type a name no ADW parameter references (e.g.
-`reviewer`), click **Create Agent Role**.
-**Pass:** it appears as a configured card even though nothing in this
-project's `adws[]` mentions it — the section shows every agent *referenced by
-an ADW or created this session*, not only ones an ADW points at.
+### AG-5 — An ADW-referenced agent absent from the roster is surfaced, with a one-click add
+Add an ADW `type: agent` parameter (per WF-6) whose default names an agent
+not in the roster (e.g. `coder`).
+**Pass:** a dashed row (`.pv-agent-unregistered-row`) reading "referenced,
+not in roster" appears above the roster cards, with a **+ add to roster**
+button. Clicking it stages a real, editable card locally (name pre-filled) —
+still requires **save agent roster** to persist.
+
+### AG-6 — "+ new agent role" stages a standalone agent
+Click `#pv-add-agent-btn`, type a name, click **Add to Roster**.
+**Pass:** it appears as a real card even though nothing references it yet.
+Save, then confirm two new files were created:
+```bash
+ls <project-path>/adws/adw_data/prompt_engineering/<name>/
+```
 
 ---
 
-## 6. Workflow diagram (new)
+## 6. Editing prompt files and workflow scripts (new)
+
+Every agent card's system/user prompt, and every ADW card's own script file,
+are edited the same way: a collapsible **show <label>** toggle that lazily
+fetches the real file's content (`GET /api/v1/projects/:id/file?path=...`)
+and a **save <label>** button that writes it back (`PUT`, same endpoint) —
+both confined to the project's own directory.
+
+### FE-1 — Agent prompt files (system.md / user.md)
+On the `planner` card (per section 5's fixture), click **show system prompt**.
+**Pass:** the real content of
+`adws/adw_data/prompt_engineering/planner/system.md` loads into a
+`resize: both` textarea. Edit it, click **save system prompt** — status
+cycles to `saved`. Confirm on disk:
+```bash
+cat <project-path>/adws/adw_data/prompt_engineering/planner/system.md
+```
+Do the same for **user prompt**; both toggles are independent (collapsing
+one doesn't discard unsaved edits in the other).
+
+### FE-2 — Workflow script
+On any ADW card (e.g. `implement-feature`), click **show script**.
+**Pass:** the real content of the file at that ADW's `path` (e.g.
+`adws/adw_prompt.py`) loads. Edit and save it; confirm the change landed on
+disk at that exact path, not anywhere else in the project.
+
+### FE-3 — A brand-new agent's prompt files don't 404 before they exist
+Immediately after AG-6 (before saving anything into them), click **show
+system prompt** on the newly-created card.
+**Pass:** it loads an empty (but real, on-disk) file rather than erroring —
+the roster save that created the card already scaffolded both `system.md`
+and `user.md` with a one-line placeholder header.
+
+---
+
+## 7. Workflow diagram (new)
 
 Still in the project view, next to the "workflows (adws)" header.
 
@@ -461,7 +528,7 @@ overflowing the modal or the page; no console errors.
 
 ---
 
-## 7. Long-text resize (new)
+## 8. Long-text resize (new)
 
 ### RZ-1 — Task description can be resized horizontally, not just vertically
 Open the task modal, drag the description box's resize handle (bottom-right
@@ -478,7 +545,7 @@ handle both vertically and horizontally.
 
 ---
 
-## 8. Wrap-up
+## 9. Wrap-up
 
 1. Re-check `read_console_messages` for the whole session — zero uncaught
    errors.

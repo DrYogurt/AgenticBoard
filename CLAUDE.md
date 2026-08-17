@@ -111,33 +111,48 @@ wired in from `app.js`, so each stays out of the main board file:
   `error` when `pi` is unavailable, so the picker degrades to manual entry
   instead of breaking the board.
   Agent selection is **just another parameter** — there is deliberately no
-  separate ADW-level "agents" field. A parameter with `type: 'agent'` means
-  its `default` is an `Agent` id; this is exactly SSSF's own `--agent`
-  CLI-flag convention (see e.g. a real `adw_prompt.py`'s `agent` parameter,
-  `default: 'builder'`), not a board-only concept — the UI unifies with it
-  rather than bolting on a parallel mechanism. Picking `type: 'agent'` in a
-  parameter row swaps its plain-text "default" input for an id-and-name
-  picker sourced from the `Agent` registry (`createAgentDefaultPicker`,
-  mirroring the model picker's UX). `renderParamsList` is shared verbatim by
-  both an ADW's own `parameters[]` and an `Agent`'s own `parameters[]` (an
-  agent role's parameters can themselves be agent-typed, for sub-agent
-  orchestration) — one function, one row-rendering path, for both owners.
-  The "agent roles" section at the top of the project view cross-references
-  every id referenced by an agent-typed parameter's `default` anywhere in
-  the project's ADWs against the workspace-wide `Agent` registry
-  (`list_agents`/`register_agent`/`update_agent`/`delete_agent`, all via
-  `POST /api/v1/command` — there's no dedicated REST route), rendering a
-  full editable card (model picker, `system_prompt` textarea, `parameters[]`)
-  for ids that resolve to a real `Agent`, or a "not yet configured" card with
-  a one-click promote button for ids that don't — promoting one registers
-  `{id, name}` as the referenced value verbatim (no slugify step: the
-  reference already **is** the id, being a raw CLI flag value). Agent edits
-  save immediately (debounced ~500ms via `update_agent`) independently of the
-  project's own save button, since `Agent` is a different backend resource
-  than the project — `update_project` has no field for it. Deleting an
-  `Agent` only removes the registry record; it never touches any parameter's
-  `default`, so a referenced-but-deleted id just reverts to "not yet
-  configured" rather than the reference disappearing.
+  board-owned "Agent" entity (an earlier version of this feature invented
+  one in the board's own `agents.json`; it was removed because it was a
+  layer of indirection over data that already exists as real files). A
+  parameter with `type: 'agent'` means its `default` is an agent *name* from
+  the project's own `adws/adw_sssf_config/sssf.config.yaml` roster — this is
+  exactly SSSF's own `--agent` CLI-flag convention (see e.g. a real
+  `adw_prompt.py`'s `agent` parameter, `default: 'builder'`), not a
+  board-only concept. Picking `type: 'agent'` in a parameter row swaps its
+  plain-text "default" input for a name-and-purpose picker sourced from that
+  project's roster (`createAgentDefaultPicker`, mirroring the model picker's
+  UX, backed by `agentsDraft` — loaded eagerly on `open()`, not lazily like
+  the workspace-wide model list, since it's one small file scoped to the
+  project already being opened).
+  The "agent roles" section at the top of the project view reads and writes
+  `sssf.config.yaml` directly via `GET`/`PUT /api/v1/projects/:id/sssf-config`
+  (`server/index.ts`). Because that file is heavily hand-commented, the PUT
+  handler edits it through the `yaml` npm package's `Document` API — mutating
+  only the specific agent nodes/fields that changed — rather than a naive
+  parse-then-restringify round trip, which would silently discard every
+  comment. Editable fields are `model`/`thinking`/`color`/`purpose`;
+  `tools`/`writes`/`harness_engineering` render read-only. Every id an
+  agent-typed parameter references gets cross-checked against the roster:
+  present → a full editable card; absent → a "referenced, not in roster" row
+  with a one-click "+ add to roster" that stages (not yet saves) a new entry.
+  All roster edits — including add/remove — are staged in a local
+  `agentsDraft` array and only reach disk via an explicit **save agent
+  roster** button (its own save banner, independent of `#pv-save-banner`/
+  `#pv-save-btn` — the roster is a different backend resource than the
+  project, and `update_project` has no field for it), mirroring how the ADW
+  list itself stages edits before its own "save changes". Adding a new agent
+  server-side also scaffolds its `prompt_engineering.system`/`.user` files
+  (under `{defaults.data_dir}/prompt_engineering/{name}/`) if they don't
+  exist yet, so the prompt editors below never 404 on a brand-new agent.
+  Each agent's `system.md`/`user.md`, and each ADW's own script file (at
+  `adw.path`), are edited by the same reusable `createFileEditor(getPath,
+  label)` component: a collapsible toggle that lazily fetches content via
+  `GET /api/v1/projects/:id/file?path=...` on first expand and saves it back
+  via `PUT` on the same endpoint — a generic, project-root-confined text-file
+  read/write, independent of both the roster PUT and `update_project`.
+  `getPath` is a function, not a captured string, so an ADW's script editor
+  always follows the *current* value of `adw.path` even if the user edits
+  that field after the editor is already open.
 - `workflow-diagram.js` (`window.WorkflowDiagram`) — a standalone, stateless
   renderer for a clickable UML-style box-and-line view of a project's `adws[]`
   (one box per workflow) and the agent ids their `type: 'agent'` parameters
@@ -175,10 +190,20 @@ Document upload lives in the task modal and posts `multipart/form-data` to
 `apiCall()`, which would JSON-encode the body and destroy the multipart
 boundary.
 
+`server/index.ts` also exposes a generic `GET`/`PUT /api/v1/projects/:id/file?path=...`
+(project-root-confined text file read/write — workflow scripts, SSSF prompt
+files) and a structured `GET`/`PUT /api/v1/projects/:id/sssf-config`
+(comment-preserving edits to `adws/adw_sssf_config/sssf.config.yaml` via the
+`yaml` package's `Document` API). Both share `resolveProjectPath`/a
+`resolveConfinedFilePath` prefix-check with the document-upload route — never
+trust a client-supplied relative path without resolving + prefix-checking it
+against the project root first.
+
 ### Testing
 `server/tests/*.test.ts` (vitest): `engine.test.ts` (core command handlers),
 `validator.test.ts` (schema validation), `server.test.ts`/`web.test.ts` (HTTP
 routes), `sse.test.ts` (event stream), `cli.test.ts` (CLI-as-HTTP-client
-behavior). `npm test` builds first (`tsc`) because some tests may exercise
-the compiled output; use `npx vitest run <file>` directly during iteration
-to skip the rebuild.
+behavior), `project-files.test.ts` (generic file editor + sssf-config
+comment-preservation). `npm test` builds first (`tsc`) because some tests may
+exercise the compiled output; use `npx vitest run <file>` directly during
+iteration to skip the rebuild.

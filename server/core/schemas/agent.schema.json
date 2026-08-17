@@ -21,27 +21,6 @@
     },
     "created_at": {
       "type": "string"
-    },
-    "model": {
-      "type": "string"
-    },
-    "system_prompt": {
-      "type": "string"
-    },
-    "parameters": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["name", "flag", "type"],
-        "properties": {
-          "name": { "type": "string" },
-          "flag": { "type": "string" },
-          "type": { "type": "string", "enum": ["string", "number", "boolean", "agent"] },
-          "label": { "type": "string" },
-          "default": {}
-        },
-        "additionalProperties": false
-      }
     }
   },
   "additionalProperties": false

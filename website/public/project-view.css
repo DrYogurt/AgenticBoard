@@ -413,7 +413,6 @@
   white-space: nowrap;
 }
 
-.pv-agent-card-unconfigured,
 .pv-agent-card-draft {
   border-style: dashed;
 }
@@ -442,14 +441,100 @@
   color: var(--accent-red);
 }
 
-.pv-agent-registry-note {
-  font-size: 0.7rem;
-  color: var(--accent-yellow);
-  background: rgba(249, 226, 175, 0.1);
-  border: 1px solid rgba(249, 226, 175, 0.25);
+.pv-agents-save-row {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.pv-agents-save-row.hidden {
+  display: none;
+}
+
+.pv-agent-unregistered-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px dashed rgba(249, 226, 175, 0.3);
+  border-radius: var(--radius-md);
+  background: rgba(249, 226, 175, 0.06);
+  font-size: 0.78rem;
+  color: var(--text-main);
+}
+
+.pv-agent-unregistered-row .flex-spacer {
+  flex: 1;
+}
+
+.pv-agent-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pv-agent-color-swatch {
+  width: 22px;
+  height: 22px;
   border-radius: var(--radius-sm);
-  padding: 4px 8px;
-  margin-bottom: 6px;
+  border: 1px solid var(--border-subtle);
+  flex-shrink: 0;
+}
+
+.pv-agent-badge-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.pv-agent-badge-none {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.pv-agent-readonly-note {
+  font-size: 0.68rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.pv-agent-prompts-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ── generic project-file editor (agent prompts, workflow scripts) ──────── */
+
+.pv-file-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pv-file-editor-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pv-file-editor-body.hidden {
+  display: none;
+}
+
+.pv-file-editor-textarea {
+  min-height: 160px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  resize: both;
+}
+
+.pv-file-editor-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 /* ── Agent Name Picker (ADW agents[] autocomplete) ───────────────────── */

@@ -3,9 +3,10 @@ export type TaskStatus = string;
 export interface ADWParameter {
   name: string;
   flag: string;
-  /** 'agent' means the flag's value is an Agent id (e.g. SSSF's own
-   *  `--agent` convention) — its default is edited via an agent picker
-   *  sourced from the Agent registry instead of free text. */
+  /** 'agent' means the flag's value is an agent name from the project's own
+   *  `adws/adw_sssf_config/sssf.config.yaml` roster (SSSF's `--agent`
+   *  convention) — its default is edited via an agent picker sourced from
+   *  that project's parsed roster instead of free text. */
   type: 'string' | 'number' | 'boolean' | 'agent';
   label?: string;
   default?: string | number | boolean;
@@ -61,9 +62,6 @@ export interface Agent {
   status?: string;
   current_task?: string | null;
   created_at?: string;
-  model?: string;
-  system_prompt?: string;
-  parameters?: ADWParameter[];
 }
 
 export interface BoardColumn {
@@ -105,7 +103,6 @@ export type CommandType =
   | 'list_extensions'
   | 'register_agent'
   | 'update_agent'
-  | 'delete_agent'
   | 'list_agents'
   | 'get_board';
 
