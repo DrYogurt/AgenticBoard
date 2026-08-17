@@ -65,6 +65,7 @@ const dom = {
   taskStatusInput: document.getElementById('task-status-input'),
   taskProjectInput: document.getElementById('task-project-input'),
   taskAdwInput: document.getElementById('task-adw-input'),
+  taskAdwParamsContainer: document.getElementById('task-adw-params-container'),
   taskDescInput: document.getElementById('task-desc-input'),
   btnDeleteTask: document.getElementById('btn-delete-task'),
 
@@ -652,7 +653,41 @@ function updateHeaderProjectDisplay() {
   }
 }
 
-function updateAdwSelectForProject(projectId, selectedAdw = null) {
+function renderAdwParamInputs(project, adwId, existingValues = null) {
+  if (!dom.taskAdwParamsContainer) return;
+  dom.taskAdwParamsContainer.innerHTML = '';
+
+  const adw = project && (project.adws || []).find((a) => a.id === adwId);
+  const params = (adw && adw.parameters) || [];
+
+  params.forEach((p) => {
+    const existing = existingValues && existingValues[p.name] !== undefined ? existingValues[p.name] : p.default;
+
+    const wrapper = document.createElement('div');
+    wrapper.className = 'form-group';
+
+    const label = document.createElement('label');
+    label.textContent = p.label || p.name;
+    wrapper.appendChild(label);
+
+    const input = document.createElement('input');
+    input.className = 'form-input';
+    input.dataset.paramName = p.name;
+
+    if (p.type === 'boolean') {
+      input.type = 'checkbox';
+      input.checked = !!existing;
+    } else {
+      input.type = p.type === 'number' ? 'number' : 'text';
+      if (existing !== undefined && existing !== null) input.value = existing;
+    }
+
+    wrapper.appendChild(input);
+    dom.taskAdwParamsContainer.appendChild(wrapper);
+  });
+}
+
+function updateAdwSelectForProject(projectId, selectedAdw = null, existingValues = null) {
   if (!dom.taskAdwInput) return;
   dom.taskAdwInput.innerHTML = '';
 
@@ -681,6 +716,8 @@ function updateAdwSelectForProject(projectId, selectedAdw = null) {
   } else {
     dom.taskAdwInput.value = '';
   }
+
+  renderAdwParamInputs(proj, dom.taskAdwInput.value, existingValues);
 }
 
 function updateProjectSelects() {
@@ -978,7 +1015,7 @@ async function handleDrop(e) {
   }
 
   const cardsContainer = column.querySelector('.column-cards-container');
-  
+
   let targetIndex = 0;
   if (dragPlaceholder && dragPlaceholder.parentNode === cardsContainer) {
     const children = Array.from(cardsContainer.children);
@@ -1062,7 +1099,7 @@ function openTaskModal(task = null) {
     dom.taskIdInput.value = task.id;
     dom.taskTitleInput.value = task.name || task.title || '';
     dom.taskProjectInput.value = task.project || (state.projects[0]?.id || 'tasks');
-    updateAdwSelectForProject(dom.taskProjectInput.value, task.adw);
+    updateAdwSelectForProject(dom.taskProjectInput.value, task.adw, task.parameter_values || null);
     dom.taskStatusInput.value = task.status || defaultTaskStatusId();
     dom.taskDescInput.value = task.description || '';
     dom.btnDeleteTask.classList.remove('hidden');
@@ -1144,6 +1181,13 @@ function setupEventListeners() {
   if (dom.taskProjectInput) {
     dom.taskProjectInput.addEventListener('change', () => {
       updateAdwSelectForProject(dom.taskProjectInput.value);
+    });
+  }
+
+  if (dom.taskAdwInput) {
+    dom.taskAdwInput.addEventListener('change', () => {
+      const proj = state.projects.find((p) => p.id === dom.taskProjectInput.value);
+      renderAdwParamInputs(proj, dom.taskAdwInput.value);
     });
   }
 
@@ -1319,13 +1363,29 @@ function setupEventListeners() {
     clearTaskFormError();
     const id = dom.taskIdInput.value;
     const taskName = dom.taskTitleInput.value.trim();
+
+    const parameterValues = {};
+    if (dom.taskAdwParamsContainer) {
+      dom.taskAdwParamsContainer.querySelectorAll('[data-param-name]').forEach((input) => {
+        const name = input.dataset.paramName;
+        if (input.type === 'checkbox') {
+          parameterValues[name] = input.checked;
+        } else if (input.type === 'number') {
+          if (input.value !== '') parameterValues[name] = Number(input.value);
+        } else if (input.value !== '') {
+          parameterValues[name] = input.value;
+        }
+      });
+    }
+
     const payload = {
       name: taskName,
       title: taskName,
       status: dom.taskStatusInput.value,
       project: dom.taskProjectInput.value,
       adw: dom.taskAdwInput.value,
-      description: dom.taskDescInput.value.trim()
+      description: dom.taskDescInput.value.trim(),
+      parameter_values: parameterValues
     };
 
     try {
