@@ -102,7 +102,7 @@ export class FakeEventSource {
   }
 }
 
-const DEFAULT_SCRIPTS = ['trace.js', 'markdown-editor.js', 'project-view.js', 'app.js'];
+const DEFAULT_SCRIPTS = ['trace.js', 'markdown-editor.js', 'workflow-diagram.js', 'project-view.js', 'app.js'];
 
 export interface Mounted {
   dom: JSDOM;
@@ -129,6 +129,11 @@ export function mountBoard(opts: { fetchStub?: FetchStub; scripts?: string[] } =
   const fetchStub = opts.fetchStub || new FetchStub();
   (window as any).fetch = fetchStub.fetch;
   (window as any).EventSource = FakeEventSource;
+  // jsdom doesn't implement layout, so scrollIntoView is simply absent —
+  // several real flows (adding a workflow, jumping from a diagram node to
+  // its list-view card) call it purely as a UX nicety with no return value
+  // anything reads, so a no-op stub is sufficient here.
+  (window as any).HTMLElement.prototype.scrollIntoView = function () {};
 
   // jsdom fires DOMContentLoaded on its own (queued after parsing, which
   // completes before our synchronous eval below runs), which would otherwise

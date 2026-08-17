@@ -6,6 +6,7 @@ import {
   Project,
   Extension,
   Agent,
+  ADWParameter,
   Command,
   CommandResult,
   BoardEvent,
@@ -32,6 +33,7 @@ const MUTATION_COMMANDS = new Set([
   'remove_extension',
   'register_agent',
   'update_agent',
+  'delete_agent',
   'sync_sssf'
 ]);
 
@@ -202,6 +204,8 @@ export class DeterministicEngine extends EventEmitter {
         return await this.handleRegisterAgent(command.payload);
       case 'update_agent':
         return await this.handleUpdateAgent(command.payload);
+      case 'delete_agent':
+        return await this.handleDeleteAgent(command.payload);
       case 'list_agents':
         return await this.handleListAgents();
 
@@ -905,6 +909,9 @@ export class DeterministicEngine extends EventEmitter {
     name: string;
     type?: string;
     status?: string;
+    model?: string;
+    system_prompt?: string;
+    parameters?: ADWParameter[];
   }): Promise<Agent> {
     if (!payload.id || !payload.name) {
       throw new Error('Agent id and name are required');
@@ -920,6 +927,9 @@ export class DeterministicEngine extends EventEmitter {
       current_task: null,
       created_at: new Date().toISOString()
     };
+    if (payload.model !== undefined) agObj.model = payload.model;
+    if (payload.system_prompt !== undefined) agObj.system_prompt = payload.system_prompt;
+    if (payload.parameters !== undefined) agObj.parameters = payload.parameters;
 
     if (existingIndex >= 0) {
       agents[existingIndex] = agObj;
@@ -935,6 +945,9 @@ export class DeterministicEngine extends EventEmitter {
     id: string;
     status?: string;
     current_task?: string | null;
+    model?: string;
+    system_prompt?: string;
+    parameters?: ADWParameter[];
   }): Promise<Agent> {
     if (!payload.id) throw new Error('Agent id is required');
     const agents = await this.storage.readAgents();
@@ -943,9 +956,22 @@ export class DeterministicEngine extends EventEmitter {
 
     if (payload.status !== undefined) ag.status = payload.status;
     if (payload.current_task !== undefined) ag.current_task = payload.current_task;
+    if (payload.model !== undefined) ag.model = payload.model;
+    if (payload.system_prompt !== undefined) ag.system_prompt = payload.system_prompt;
+    if (payload.parameters !== undefined) ag.parameters = payload.parameters;
 
     await this.storage.writeAgents(agents);
     return ag;
+  }
+
+  private async handleDeleteAgent(payload: { id: string }): Promise<{ removed: boolean; id: string }> {
+    if (!payload.id) throw new Error('Agent id is required');
+    const agents = await this.storage.readAgents();
+    const filtered = agents.filter((a) => a.id !== payload.id);
+    if (filtered.length !== agents.length) {
+      await this.storage.writeAgents(filtered);
+    }
+    return { removed: true, id: payload.id };
   }
 
   private async handleListAgents(): Promise<Agent[]> {

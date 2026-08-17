@@ -54,14 +54,22 @@ describe('harness sanity: real files evaluate cleanly in jsdom', () => {
 describe('EX: structural regressions on the real index.html (no DOM needed)', () => {
   const html = readPublicFile('index.html');
 
-  it('script tags load trace.js, markdown-editor.js, project-view.js, then app.js last', () => {
+  it('script tags load trace.js, markdown-editor.js, workflow-diagram.js, project-view.js, then app.js last', () => {
     const scriptSrcs = Array.from(html.matchAll(/<script src="([^"]+)"/g)).map((m) => m[1]);
-    expect(scriptSrcs).toEqual(['trace.js', 'markdown-editor.js', 'project-view.js', 'app.js']);
+    expect(scriptSrcs).toEqual(['trace.js', 'markdown-editor.js', 'workflow-diagram.js', 'project-view.js', 'app.js']);
   });
 
-  it('markdown-editor.css and project-view.css are linked', () => {
+  it('markdown-editor.css, project-view.css and workflow-diagram.css are linked', () => {
     expect(html).toContain('href="markdown-editor.css"');
     expect(html).toContain('href="project-view.css"');
+    expect(html).toContain('href="workflow-diagram.css"');
+  });
+
+  it('long-text boxes (task description, agent prompts) allow horizontal as well as vertical resize', () => {
+    const styles = readPublicFile('styles.css');
+    const mdeCss = readPublicFile('markdown-editor.css');
+    expect(styles).toMatch(/\.textarea\s*\{[^}]*resize:\s*both/);
+    expect(mdeCss).toMatch(/\.mde-wrap\s*\{[^}]*resize:\s*both/);
   });
 
   it('#project-search-input is inside #modal-projects', () => {

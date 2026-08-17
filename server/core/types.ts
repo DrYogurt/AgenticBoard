@@ -59,6 +59,9 @@ export interface Agent {
   status?: string;
   current_task?: string | null;
   created_at?: string;
+  model?: string;
+  system_prompt?: string;
+  parameters?: ADWParameter[];
 }
 
 export interface BoardColumn {
@@ -100,6 +103,7 @@ export type CommandType =
   | 'list_extensions'
   | 'register_agent'
   | 'update_agent'
+  | 'delete_agent'
   | 'list_agents'
   | 'get_board';
 

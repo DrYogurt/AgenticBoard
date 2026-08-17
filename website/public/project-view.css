@@ -69,6 +69,55 @@
   gap: 10px;
 }
 
+.pv-adw-diagram.hidden,
+.pv-adw-list.hidden {
+  display: none;
+}
+
+/* ── list / diagram view toggle ──────────────────────────────────────── */
+
+.pv-view-toggle {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--mocha-surface0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+}
+
+.pv-view-toggle-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-size: 0.68rem;
+  text-transform: lowercase;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.pv-view-toggle-btn:hover {
+  color: var(--text-main);
+}
+
+.pv-view-toggle-btn.pv-active {
+  background: var(--primary);
+  color: var(--mocha-crust);
+  font-weight: 600;
+}
+
+/* Diagram-click → list-view jump target highlight. */
+@keyframes pv-flash-pulse {
+  0%, 100% { box-shadow: none; }
+  30% { box-shadow: 0 0 0 3px var(--primary-glow); }
+}
+
+.pv-flash {
+  animation: pv-flash-pulse 1.2s ease-out;
+  border-color: var(--border-glow) !important;
+}
+
 .pv-adw-card {
   background: var(--mocha-surface0);
   border: 1px solid var(--border-subtle);
@@ -315,4 +364,142 @@
   text-align: center;
   color: var(--text-dim);
   font-size: 0.8rem;
+}
+
+/* ── Agent Roles section ─────────────────────────────────────────────── */
+
+.pv-agent-roles-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pv-agent-card {
+  background: var(--mocha-surface0);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pv-agent-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pv-agent-card-header strong {
+  color: var(--text-main);
+  font-size: 0.85rem;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-agent-card-header .form-input {
+  flex: 1;
+}
+
+.pv-agent-tag {
+  font-size: 0.68rem;
+  color: var(--accent-yellow);
+  background: rgba(249, 226, 175, 0.1);
+  border: 1px solid rgba(249, 226, 175, 0.25);
+  border-radius: var(--radius-full);
+  padding: 2px 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.pv-agent-card-unconfigured,
+.pv-agent-card-draft {
+  border-style: dashed;
+}
+
+.pv-agent-card-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.pv-agent-save-status {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pv-agent-save-status.pv-ok {
+  color: var(--accent-green);
+}
+
+.pv-agent-save-status.pv-err {
+  color: var(--accent-red);
+}
+
+.pv-agent-registry-note {
+  font-size: 0.7rem;
+  color: var(--accent-yellow);
+  background: rgba(249, 226, 175, 0.1);
+  border: 1px solid rgba(249, 226, 175, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  margin-bottom: 6px;
+}
+
+/* ── Agent Name Picker (ADW agents[] autocomplete) ───────────────────── */
+
+.pv-agent-name-picker {
+  position: relative;
+}
+
+.pv-agent-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: var(--mocha-crust);
+  border: 1px solid var(--border-glow);
+  border-radius: var(--radius-md);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.6);
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.pv-agent-dropdown.hidden {
+  display: none;
+}
+
+.pv-agent-option {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 0.76rem;
+  color: var(--text-main);
+}
+
+.pv-agent-option:hover {
+  background: var(--mocha-surface0);
+}
+
+.pv-agent-dropdown-hint,
+.pv-agent-dropdown-empty,
+.pv-agent-dropdown-note {
+  padding: 6px 10px;
+  font-size: 0.7rem;
+  color: var(--text-dim);
+}
+
+.pv-agent-dropdown-note {
+  border-top: 1px solid var(--border-subtle);
+  color: var(--accent-yellow);
 }

@@ -6,8 +6,8 @@ should show up in the other:
 
 | Layer | Location | Runs with |
 | --- | --- | --- |
-| DOM / module behaviour | `website/tests/ui.test.ts` | `cd website && npm test` |
-| API endpoints + persistence | `server/tests/features.test.ts` | `cd server && npx vitest run tests/features.test.ts` |
+| DOM / module behaviour | `website/tests/ui.test.ts`, `website/tests/agent-diagram.test.ts` | `cd website && npm test` |
+| API endpoints + persistence | `server/tests/features.test.ts`, `server/tests/agents.test.ts` | `cd server && npx vitest run tests/features.test.ts tests/agents.test.ts` |
 
 Check IDs (`EX-1`, `WF-3`, …) are shared between this document and the test
 names. When you change a feature, update both sides.
@@ -23,10 +23,14 @@ verifies them. Don't read a green test run as covering them:
 | `MD-5` | jsdom has no layout engine, so caret/pixel alignment can't be measured. The suite substitutes a structural proxy (one source line renders as exactly one output line). |
 | `DU-5` | Synthesizing a genuine file drop. |
 | `WF-11`, `WF-13` | Covered structurally, but the real degraded/conflict UX is worth seeing. |
+| `AG-4` | Deletion goes through a native `confirm()` dialog, which browser automation must never trigger (see the rules below) — the suite stubs `window.confirm`, a browser pass has to actually see the prompt. |
+| `RZ-1`, `RZ-2` | jsdom has no layout engine, so a `resize: both` handle can't actually be dragged. The suite only asserts the CSS declaration exists. |
 
 `DU-8` and `DU-9` are deliberately server-side checks — the dedup and
 path-sanitizing logic lives in the upload handler, so they're asserted in
-`server/tests/features.test.ts`, not the DOM suite.
+`server/tests/features.test.ts`, not the DOM suite. `AG-2`/`AG-3`/`AG-5`'s
+`register_agent`/`update_agent` persistence is likewise asserted server-side
+in `server/tests/agents.test.ts`.
 
 ---
 
@@ -343,7 +347,128 @@ Do **not** let an `alert()` actually fire.
 
 ---
 
-## 5. Wrap-up
+## 5. Agent roles (new)
+
+The **Agent** entity (`register_agent`/`update_agent`/`delete_agent`/
+`list_agents`) is a workspace-wide registry, distinct from a project. A
+project's ADWs only reference agent roles by free-text name in `agents[]` —
+nothing on the backend enforces that name matches a real registered `Agent`.
+This section of the project view exists to make that link visible and
+editable. Open the `demo` project view; `#pv-agents-section` sits **above**
+`#pv-adw-list` (Hamburger → *Projects* → click a row, per WF-4).
+
+### AG-1 — Agent Roles section exists above the workflow list
+**Pass:** `#pv-agents-section` (header "agent roles", `#pv-add-agent-btn`)
+renders before the "workflows (adws)" header in DOM order. With no ADW
+referencing any agent name, `#pv-agent-roles-list` shows an explanatory empty
+state rather than nothing.
+
+### AG-2 — An ADW-referenced but unregistered agent shows "not yet configured"
+Add an ADW whose `agents[]` includes a name with no matching `Agent` record
+(e.g. `coder`, assuming it hasn't been registered yet).
+**Pass:** a dashed-border card (`.pv-agent-card-unconfigured`) appears in the
+Agent Roles section showing just the name, a "not yet configured" tag, and a
+**Create Agent Role** button.
+
+### AG-3 — Create Agent Role promotes it to a full editable card
+Click **Create Agent Role** on the `coder` card.
+**Pass:** it's replaced by a solid-border card with a **model picker**
+(same searchable provider/model UI as an ADW's), a **system prompt**
+`<textarea>`, and a **parameters** list with the same add/remove UI as ADW
+parameters. This is a real `register_agent` call — confirm server-side:
+```bash
+curl -s -X POST localhost:3200/api/v1/command -H 'Content-Type: application/json' \
+  -d '{"type":"list_agents","payload":{}}' | python3 -m json.tool
+```
+
+### AG-4 — Edits save independently of the project's own Save button
+Set a model, type a system prompt, add a parameter on the `coder` card.
+**Pass:** a small inline status next to the card header cycles
+`editing…` → `saving…` → `saved` **without** touching `#pv-save-banner` or
+requiring `#pv-save-btn` — Agent edits are a different backend resource
+(`update_agent`) than the project's own `adws` (`update_project`). Reload and
+reopen the project view: the model/prompt/parameters persisted.
+
+### AG-5 — Deleting a still-referenced agent role reverts, it doesn't vanish
+Click the card's delete (`✕`) button.
+**Pass:** a `confirm()` dialog appears — **let it appear, don't dismiss it via
+automation** (native dialogs block the extension; see the rules above). If you
+must verify this check unattended, stub it first:
+```js
+window.confirm = () => true;
+```
+Confirming sends `delete_agent`; because `coder` is still referenced by the
+ADW, the card reverts to the "not yet configured" state from AG-2 rather than
+disappearing — the ADW's `agents: ["coder"]` string is untouched.
+
+### AG-6 — "+ new agent role" registers a standalone agent
+Click `#pv-add-agent-btn`, type a name no ADW references (e.g. `reviewer`),
+click **Create Agent Role**.
+**Pass:** it appears as a configured card even though nothing in this
+project's `adws[]` mentions it — the section shows every agent *referenced by
+an ADW or created this session*, not only ones an ADW points at.
+
+---
+
+## 6. Workflow diagram (new)
+
+Still in the project view, next to the "workflows (adws)" header.
+
+### DG-1 — List/diagram toggle exists and switches views
+**Pass:** a pill toggle (`#pv-adw-view-toggle`, "list" / "diagram") sits next
+to `#pv-add-adw-btn`. Clicking "diagram" hides `#pv-adw-list` and shows
+`#pv-adw-diagram`; the active button is visually distinct. Reopening the
+project view (even a different project) always starts back on "list".
+
+### DG-2 — The diagram shows one box per workflow and per referenced agent role
+**Pass:** a clickable UML-style box-and-line diagram renders: one box per ADW
+(left column) connected by a line to a box per unique agent-role name it
+references (right column, deduplicated — an agent used by two workflows is
+still one box with two incoming lines). Screenshot this.
+
+### DG-3 — Clicking a workflow node jumps to and expands its list-view card
+Click a workflow's box in the diagram.
+**Pass:** the view switches back to "list", the matching `.pv-adw-card`
+expands, scrolls into view, and briefly highlights (`.pv-flash`).
+
+### DG-4 — Clicking an agent-role node jumps to its Agent Roles card
+Click an agent-role's box.
+**Pass:** the page scrolls to and briefly highlights the matching card in
+`#pv-agent-roles-list` (view stays wherever it was — the Agent Roles section
+isn't view-toggled).
+
+### DG-5 — "+ new workflow" / "+ new agent role" nodes work from the diagram
+Click the dashed "+" node in each column (or, for a project with zero
+workflows, the diagram's own empty-state add button).
+**Pass:** behaves identically to the equivalent list-view button — a new
+workflow lands you on an expanded, editable card; a new agent role opens an
+inline draft card in the Agent Roles section.
+
+### DG-6 — Large graphs stay usable
+Add 8+ ADWs with a mix of shared and unique agent names.
+**Pass:** the diagram scrolls (both axes) inside its own container rather than
+overflowing the modal or the page; no console errors.
+
+---
+
+## 7. Long-text resize (new)
+
+### RZ-1 — Task description can be resized horizontally, not just vertically
+Open the task modal, drag the description box's resize handle (bottom-right
+corner) sideways.
+**Pass:** the box widens, and the markdown highlight overlay (`.mde-surface`)
+tracks the new width exactly — no visible seam or misalignment between the
+`<textarea>` and its `.mde-highlight` layer at the new size.
+
+### RZ-2 — Agent system-prompt box resizes the same way
+On a configured agent card (AG-3), drag its system-prompt textarea's resize
+handle both vertically and horizontally.
+**Pass:** both directions work; the modal body scrolls horizontally
+(`overflow-x: auto`) rather than the box being clipped at the modal's edge.
+
+---
+
+## 8. Wrap-up
 
 1. Re-check `read_console_messages` for the whole session — zero uncaught
    errors.

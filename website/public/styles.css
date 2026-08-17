@@ -709,6 +709,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  overflow-x: auto;
 }
 
 .form-group {
@@ -745,7 +746,7 @@ body {
 }
 
 .textarea {
-  resize: vertical;
+  resize: both;
   min-height: 85px;
 }
 
