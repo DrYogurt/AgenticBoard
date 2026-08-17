@@ -173,6 +173,7 @@ const ProjectView = (() => {
 
     let activeIndex = -1;
     let capped = [];
+    let userTyped = false;
 
     function commit(value) {
       adw.model = value || undefined;
@@ -209,7 +210,9 @@ const ProjectView = (() => {
         return;
       }
 
-      const matches = filterModels(input.value);
+      // Until the user types, ignore the prefilled model — otherwise reopening a
+      // picker that already has one filters down to just that entry.
+      const matches = filterModels(userTyped ? input.value : '');
       if (matches.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'pv-model-dropdown-empty';
@@ -257,6 +260,7 @@ const ProjectView = (() => {
     }
 
     input.addEventListener('focus', async () => {
+      userTyped = false;
       dropdown.innerHTML = '<div class="pv-model-dropdown-hint">loading models…</div>';
       dropdown.classList.remove('hidden');
       await ensureModelsLoaded();
@@ -264,6 +268,7 @@ const ProjectView = (() => {
     });
 
     input.addEventListener('input', () => {
+      userTyped = true;
       adw.model = input.value.trim() || undefined;
       clearBtn.style.display = input.value ? '' : 'none';
       onChange();
