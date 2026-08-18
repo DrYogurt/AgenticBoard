@@ -294,6 +294,22 @@ export class BoardServer {
       }
     });
 
+    // The column itself is never deleted by the board's own trash-can
+    // button anymore — this moves every task currently in it to the
+    // (hidden) Archived column instead. See handleArchiveColumnTasks.
+    this.app.post('/api/v1/columns/:id/archive', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const result = await this.engine.executeCommand({
+          type: 'archive_column_tasks',
+          payload: { column_id: req.params.id },
+          expected_revision: getExpectedRevision(req)
+        });
+        res.status(result.success ? 200 : 400).json(result);
+      } catch (err) {
+        next(err);
+      }
+    });
+
     // `pi` model catalog for the model picker — cached in memory since spawning
     // `pi --list-models` on every picker open is unnecessary.
     this.app.get('/api/v1/models', async (req: Request, res: Response, next: NextFunction) => {

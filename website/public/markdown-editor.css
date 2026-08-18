@@ -23,7 +23,7 @@
   font-family: var(--font-mono);
   font-size: 0.78rem;
   line-height: 19px;
-  white-space: pre;
+  white-space: pre-wrap;
   overflow: auto;
 }
 

@@ -815,6 +815,19 @@ body {
   display: none !important;
 }
 
+.archived-restore-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.archived-restore-select {
+  width: auto;
+  padding: 3px 6px;
+  font-size: 0.72rem;
+}
+
 /* Workflow Trace (task modal + preview drawer) */
 .workflow-header-row {
   display: flex;

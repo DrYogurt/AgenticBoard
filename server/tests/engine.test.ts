@@ -513,6 +513,66 @@ describe('DeterministicEngine Integration', () => {
     });
   });
 
+  describe('archive_column_tasks', () => {
+    // The column's own trash-can button no longer deletes the column — it
+    // moves every task in it to a real, auto-created "Archived" column
+    // instead, so the usual "every task belongs to exactly one real
+    // column" invariant never breaks.
+    it('moves every task in the column to Archived and leaves the column itself intact', async () => {
+      const t1 = await engine.executeCommand({ type: 'create_task', payload: { name: 'One', project: 'tasks', status: 'todo' } });
+      const t2 = await engine.executeCommand({ type: 'create_task', payload: { name: 'Two', project: 'tasks', status: 'todo' } });
+      const other = await engine.executeCommand({ type: 'create_task', payload: { name: 'Other', project: 'tasks', status: 'in-progress' } });
+
+      const res = await engine.executeCommand({ type: 'archive_column_tasks', payload: { column_id: 'todo' } });
+      expect(res.success).toBe(true);
+      expect(res.data.archived.sort()).toEqual([t1.data.id, t2.data.id].sort());
+
+      const board = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(board.columns.some((c: any) => c.id === 'todo')).toBe(true);
+      expect(board.columns.some((c: any) => c.id === 'archived')).toBe(true);
+      expect(board.task_order.todo).toEqual([]);
+      expect(board.task_order.archived).toEqual(expect.arrayContaining([t1.data.id, t2.data.id]));
+      expect(board.task_order['in-progress']).toContain(other.data.id);
+
+      const one = await engine.executeCommand({ type: 'get_task', payload: { id: t1.data.id } });
+      expect(one.data.status).toBe('archived');
+      const untouched = await engine.executeCommand({ type: 'get_task', payload: { id: other.data.id } });
+      expect(untouched.data.status).toBe('in-progress');
+    });
+
+    it('is a no-op success (still creates the Archived column) for an empty column', async () => {
+      const res = await engine.executeCommand({ type: 'archive_column_tasks', payload: { column_id: 'done' } });
+      expect(res.success).toBe(true);
+      expect(res.data.archived).toEqual([]);
+      const board = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(board.columns.some((c: any) => c.id === 'archived')).toBe(true);
+    });
+
+    it('an archived task can be restored via the ordinary move_task command', async () => {
+      const created = await engine.executeCommand({ type: 'create_task', payload: { name: 'Restore me', project: 'tasks', status: 'todo' } });
+      await engine.executeCommand({ type: 'archive_column_tasks', payload: { column_id: 'todo' } });
+
+      const restored = await engine.executeCommand({ type: 'move_task', payload: { id: created.data.id, target_status: 'in-progress' } });
+      expect(restored.success).toBe(true);
+      expect(restored.data.status).toBe('in-progress');
+
+      const board = (await engine.executeCommand({ type: 'get_board', payload: {} })).data.board;
+      expect(board.task_order.archived).not.toContain(created.data.id);
+      expect(board.task_order['in-progress']).toContain(created.data.id);
+    });
+
+    it('rejects a nonexistent column', async () => {
+      const res = await engine.executeCommand({ type: 'archive_column_tasks', payload: { column_id: 'does-not-exist' } });
+      expect(res.success).toBe(false);
+    });
+
+    it('refuses to archive the Archived column into itself', async () => {
+      await engine.executeCommand({ type: 'archive_column_tasks', payload: { column_id: 'done' } }); // creates it
+      const res = await engine.executeCommand({ type: 'archive_column_tasks', payload: { column_id: 'archived' } });
+      expect(res.success).toBe(false);
+    });
+  });
+
   describe('outcomeToColumn / mapSessionStatusToColumn (pure helpers)', () => {
     it('maps run outcomes to their target column, or null for a deliberate stop', () => {
       const outcomeToColumn = (DeterministicEngine as any).outcomeToColumn;

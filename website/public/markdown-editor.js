@@ -136,18 +136,43 @@
     return width || 0;
   }
 
+  // How many visual rows a source line occupies once soft-wrap is on —
+  // needed to convert a source line index into an actual visual row offset
+  // for the y position below. Approximates a header line's *own* wrapped
+  // width using the same unscaled-prefix + scaled-remainder arithmetic as
+  // the x position, so a wrapped header still contributes roughly the right
+  // number of rows to everything after it.
+  function visualRowsForLine(lineText, charsPerRow) {
+    var m = HEADER_RE.exec(lineText);
+    var visualLen;
+    if (m) {
+      var prefixLen = m[1].length + m[2].length;
+      var scale = HEADER_SCALE[m[1].length] || 1;
+      visualLen = prefixLen + Math.ceil(Math.max(0, lineText.length - prefixLen) * scale);
+    } else {
+      visualLen = lineText.length;
+    }
+    return Math.max(1, Math.ceil(visualLen / charsPerRow) || 1);
+  }
+
   // The textarea's own native caret is correct everywhere EXCEPT on a
   // header line: transform: scale() (see markdown-editor.css) makes the
   // *visible* glyphs in .mde-highlight wider than the *actual* (unscaled)
   // text the native caret tracks in the invisible textarea underneath, so
   // clicking anywhere past the first character of a scaled header lands
   // the real caret well behind where it visually appears. Since both
-  // layers share one monospace font and there's no soft-wrap, the scaled
-  // x position is plain arithmetic: unscaled up through the "## " mark,
-  // then column * charWidth * levelScale beyond it. When the caret sits on
-  // a header line, hide the native caret (caret-color: transparent) and
-  // draw this synthetic one instead; everywhere else, the native caret is
-  // already pixel-correct and this stays hidden.
+  // layers share one monospace font, the scaled x position within the
+  // caret's own line is plain arithmetic: unscaled up through the "## "
+  // mark, then column * charWidth * levelScale beyond it. Soft-wrap means a
+  // source line's index no longer equals its visual row, though, so y is
+  // the sum of visualRowsForLine() over every *preceding* line — this
+  // doesn't account for the caret's own line wrapping partway through
+  // itself (a header long enough to wrap is rare, especially now that
+  // detail views are much wider; left as a known simplification rather
+  // than fully solving general wrapped-text layout here). When the caret
+  // sits on a header line, hide the native caret (caret-color: transparent)
+  // and draw this synthetic one instead; everywhere else, the native caret
+  // is already pixel-correct and this stays hidden.
   function updateCaret(handle) {
     var ta = handle.textarea;
     if (document.activeElement !== ta || ta.selectionStart !== ta.selectionEnd) {
@@ -160,7 +185,6 @@
     var lineStart = value.lastIndexOf('\n', pos - 1) + 1;
     var lineEndIdx = value.indexOf('\n', pos);
     var lineEnd = lineEndIdx === -1 ? value.length : lineEndIdx;
-    var lineIndex = value.slice(0, lineStart).split('\n').length - 1;
     var col = pos - lineStart;
     var lineText = value.slice(lineStart, lineEnd);
     var m = HEADER_RE.exec(lineText);
@@ -174,7 +198,17 @@
     var x = col <= prefixLen
       ? col * handle.charWidth
       : prefixLen * handle.charWidth + (col - prefixLen) * handle.charWidth * scale;
-    var y = lineIndex * handle.lineHeight;
+
+    var contentWidth = ta.clientWidth - handle.padLeft - handle.padRight;
+    var charsPerRow = Math.max(1, Math.floor(contentWidth / handle.charWidth) || 1);
+    var precedingLines = value.slice(0, lineStart).split('\n');
+    precedingLines.pop(); // the split's trailing empty entry belongs to lineStart, not a line before it
+    var visualRowOffset = 0;
+    for (var i = 0; i < precedingLines.length; i++) {
+      visualRowOffset += visualRowsForLine(precedingLines[i], charsPerRow);
+    }
+    var y = visualRowOffset * handle.lineHeight;
+
     handle.caret.style.left = (handle.padLeft + x - ta.scrollLeft) + 'px';
     handle.caret.style.top = (handle.padTop + y - ta.scrollTop) + 'px';
     handle.caret.style.height = handle.lineHeight + 'px';
@@ -199,10 +233,14 @@
     wrapper.appendChild(textareaEl);
 
     textareaEl.classList.add('mde-surface', 'mde-textarea');
-    // no soft-wrap: keeps the pre's and textarea's visual line count identical per
-    // source line, so a header's larger font-size can never wrap differently and
-    // throw off vertical alignment on later lines
-    textareaEl.setAttribute('wrap', 'off');
+    // Soft-wrap (the textarea's default — set explicitly for clarity). The
+    // browser wraps at word boundaries, not a fixed character count, so
+    // visualRowsForLine()'s character-count approximation of wrapped row
+    // counts (used for the synthetic caret's y position below) can be off
+    // by a row for text with irregular word lengths — accepted as an
+    // approximation rather than replicating the browser's exact line-
+    // breaking algorithm.
+    textareaEl.setAttribute('wrap', 'soft');
     textareaEl.spellcheck = false;
 
     var caret = document.createElement('div');
@@ -218,6 +256,7 @@
       charWidth: measureCharWidth(textareaEl),
       lineHeight: parseFloat(cs.lineHeight) || 19,
       padLeft: parseFloat(cs.paddingLeft) || 0,
+      padRight: parseFloat(cs.paddingRight) || 0,
       padTop: parseFloat(cs.paddingTop) || 0
     };
 

@@ -202,20 +202,25 @@ wired in from `app.js`, so each stays out of the main board file:
 - `markdown-editor.js` (`window.MarkdownEditor`) — markdown syntax
   highlighting for the task description. A `<pre>` highlight layer sits
   behind a transparent-text `<textarea>`, so the field stays a real
-  textarea whose `.value` is raw markdown. Two non-obvious constraints:
-  headers are enlarged with `transform: scale()` rather than `font-size`
-  (a font-size bump grows the line box and drifts the overlay out of
-  alignment), and both layers use `white-space: pre` with soft wrap off,
-  because a scaled header is an unbreakable `inline-block` and would
-  otherwise wrap differently from the textarea. `app.js` assigns
-  `.value` directly when opening the modal, which fires no `input` event —
-  hence the explicit `MarkdownEditor.refresh()` call there. `.mde-wrap` uses
-  `resize: both` (not just `vertical`): both the highlight `<pre>` and the
-  real `<textarea>` are `position: absolute; inset: 0` children sized off the
-  wrapper's own box, so a wider wrapper propagates to both layers with no
-  extra JS. `.modal-body` carries `overflow-x: auto` so a widened box scrolls
-  within the modal instead of being clipped by `.modal-card`'s
-  `overflow: hidden` (which stays in place for its rounded-corner clipping).
+  textarea whose `.value` is raw markdown. Headers are enlarged with
+  `transform: scale()` rather than `font-size` (a font-size bump grows the
+  line box and drifts the overlay out of alignment across *later* lines,
+  even at a fixed line-height). Both layers soft-wrap (`wrap="soft"` /
+  `white-space: pre-wrap`) like any other large text field. `app.js`
+  assigns `.value` directly when opening the modal, which fires no `input`
+  event — hence the explicit `MarkdownEditor.refresh()` call there.
+  `.mde-wrap` uses `resize: both` (not just `vertical`): both the highlight
+  `<pre>` and the real `<textarea>` are `position: absolute; inset: 0`
+  children sized off the wrapper's own box, so a wider wrapper propagates to
+  both layers with no extra JS, and `bindResizeGrowsModal` (app.js,
+  duplicated in project-view.js for its own file editors) grows the
+  *modal-card itself* to follow — via `ResizeObserver`, comparing the box's
+  `getBoundingClientRect().right` against the card's, growing (never
+  shrinking back) whenever the box would otherwise spill past the card's
+  edge. `.modal-body` still carries `overflow-x: auto` as a fallback for
+  browsers without `ResizeObserver`, instead of clipping via
+  `.modal-card`'s `overflow: hidden` (which stays in place for its
+  rounded-corner clipping).
   Header scaling creates a second, separate problem beyond cross-line
   vertical alignment: the textarea's own native caret only ever tracks
   *unscaled* text, so on a header line it silently drifts away from the
@@ -223,13 +228,29 @@ wired in from `app.js`, so each stays out of the main board file:
   with a synthetic caret rather than a layout change — a plain `<textarea>`
   can't have per-line font sizes anyway, so there's no way to make the real
   caret track scaled text natively. Since both layers share one monospace
-  font and there's no soft-wrap, the scaled x position is exact arithmetic
-  (`updateCaret` in markdown-editor.js): unscaled through the `"## "` mark,
-  then `column * charWidth * levelScale` beyond it (`charWidth` measured
-  once via a hidden probe span). When the real caret sits on a header line,
+  font, the scaled x position within the caret's own line is exact
+  arithmetic (`updateCaret` in markdown-editor.js): unscaled through the
+  `"## "` mark, then `column * charWidth * levelScale` beyond it
+  (`charWidth` measured once via a hidden probe span). Soft-wrap means a
+  source line's index no longer equals its visual row, though, so the y
+  position sums `visualRowsForLine()` over every line *before* the caret's
+  own — itself an approximation (browsers wrap at word boundaries, not a
+  fixed character count), and the caret's own line wrapping partway through
+  itself isn't accounted for at all (rare, especially now that detail views
+  are much wider — a known, documented simplification rather than solving
+  general wrapped-text layout). When the real caret sits on a header line,
   `caret-color: transparent` hides the native one and a `.mde-synthetic-caret`
   div is positioned there instead; everywhere else the native caret is
   already correct and this stays hidden.
+- `python-highlight.js` (`window.PythonHighlight`) — a much simpler sibling
+  to markdown-editor.js's highlighter, applied only to a workflow's own
+  script file via `createFileEditor`'s `opts.highlight` (project-view.js).
+  Pure color (no `transform`/font-size changes at all, even for
+  keywords/comments — see the CSS comment for why bold/italic were
+  deliberately avoided too), so there's no caret-tracking problem to work
+  around: a plain overlay + transparent textarea is enough, no synthetic
+  caret needed. `opts.highlight` is optional — `createFileEditor` falls
+  back to a plain, unwrapped textarea (agent prompt files) when omitted.
 
 Document upload lives in the task modal and posts `multipart/form-data` to
 `POST /api/v1/projects/:id/documents`, which stores files under the
@@ -261,6 +282,26 @@ above) — this opens its own short-lived writable `DatabaseSync` connection
 purely to delete one task's own rows, wrapped in try/catch so a locked or
 schema-mismatched db degrades to "at least the session files are gone"
 rather than failing the whole clear.
+
+A column's own trash-can button no longer deletes the column — it archives
+every task currently in it instead (`POST /api/v1/columns/:id/archive`,
+`archive_column_tasks` command). "Archived" is a real board column (auto-
+created on first use via `ARCHIVED_COLUMN_ID` in `engine.ts`), not a
+separate task field, specifically so it satisfies the same referential-
+integrity invariant every other task already does (`validator.ts`: every
+task's `status` must match a real column, and appear in exactly that
+column's `task_order`) — a `status: 'archived'` with no matching column
+would fail that check immediately. `app.js` filters it out of the main
+kanban grid and the task-status dropdown via its own `ARCHIVED_COLUMN_ID`
+constant (keep both in sync if it's ever renamed), surfacing it only in the
+"Archived Tasks" drawer (`openArchiveModal`/`renderArchivedList`), whose
+restore action is just the ordinary `move_task` command — `handleMoveTask`
+only validates the *target* column, not the task's current one, so no new
+command was needed for restoring.
+
+The task modal and project-view modal both use `.modal-xl` (matching the
+trace/waterfall modal's own width) rather than the default/`.modal-lg`
+sizing, since both are genuine "detail views" with large text content.
 
 ### Testing
 `server/tests/*.test.ts` (vitest): `engine.test.ts` (core command handlers),

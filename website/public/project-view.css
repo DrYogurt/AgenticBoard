@@ -546,6 +546,62 @@
   resize: both;
 }
 
+/* Highlighted variant (Python): the wrap, not the textarea, carries
+   resize — pre and textarea both fill it via inset:0, same technique as
+   markdown-editor.css's .mde-wrap. */
+.pv-file-editor-surface-wrap {
+  position: relative;
+  width: 100%;
+  min-width: 220px;
+  height: 220px;
+  min-height: 160px;
+  resize: both;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+}
+
+.pv-file-editor-highlight,
+.pv-file-editor-textarea-highlighted {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow: auto;
+}
+
+.pv-file-editor-highlight {
+  background: var(--mocha-surface0);
+  color: var(--text-main);
+  pointer-events: none;
+}
+
+.pv-file-editor-textarea-highlighted {
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text-main);
+  border-color: transparent;
+  resize: none;
+  outline: none;
+}
+
+.pv-file-editor-textarea-highlighted::selection {
+  background: var(--primary-glow);
+  color: transparent;
+}
+
+.pv-file-editor-textarea-highlighted:focus {
+  outline: none;
+}
+
 .pv-file-editor-footer {
   display: flex;
   align-items: center;

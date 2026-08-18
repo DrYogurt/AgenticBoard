@@ -102,7 +102,7 @@ export class FakeEventSource {
   }
 }
 
-const DEFAULT_SCRIPTS = ['trace.js', 'markdown-editor.js', 'workflow-diagram.js', 'project-view.js', 'app.js'];
+const DEFAULT_SCRIPTS = ['trace.js', 'markdown-editor.js', 'python-highlight.js', 'workflow-diagram.js', 'project-view.js', 'app.js'];
 
 export interface Mounted {
   dom: JSDOM;

@@ -20,7 +20,7 @@ verifies them. Don't read a green test run as covering them:
 | Check | Why it needs a browser |
 | --- | --- |
 | `EX-5` | Real HTML5 drag-and-drop sequencing and reload persistence. |
-| `MD-5` | jsdom has no layout engine, so caret/pixel alignment can't be measured. The suite substitutes a structural proxy (one source line renders as exactly one output line). |
+| `MD-5` | jsdom has no layout engine, so real caret/pixel alignment (including on a *wrapped* line) can't be measured. The suite substitutes a structural proxy instead. |
 | `DU-5` | Synthesizing a genuine file drop. |
 | `WF-11`, `WF-13` | Covered structurally, but the real degraded/conflict UX is worth seeing. |
 | `AG-4` | Deletion goes through a native `confirm()` dialog, which browser automation must never trigger (see the rules below) — the suite stubs `window.confirm`, a browser pass has to actually see the prompt. |
@@ -532,20 +532,86 @@ overflowing the modal or the page; no console errors.
 
 ### RZ-1 — Task description can be resized horizontally, not just vertically
 Open the task modal, drag the description box's resize handle (bottom-right
-corner) sideways.
+corner) sideways past the modal's current edge.
 **Pass:** the box widens, and the markdown highlight overlay (`.mde-surface`)
 tracks the new width exactly — no visible seam or misalignment between the
-`<textarea>` and its `.mde-highlight` layer at the new size.
+`<textarea>` and its `.mde-highlight` layer at the new size. **The whole
+modal card grows to follow it** (`bindResizeGrowsModal`, a `ResizeObserver`)
+rather than the box spilling past the modal's edge — no internal horizontal
+scrollbar should appear inside `.modal-body` while doing this.
 
-### RZ-2 — Agent system-prompt box resizes the same way
+### RZ-2 — Agent system-prompt / workflow-script boxes resize the same way
 On a configured agent card (AG-3), drag its system-prompt textarea's resize
-handle both vertically and horizontally.
-**Pass:** both directions work; the modal body scrolls horizontally
-(`overflow-x: auto`) rather than the box being clipped at the modal's edge.
+handle both vertically and horizontally; then do the same for an ADW's
+"show script" editor (section 6).
+**Pass:** both directions work on both editors, and both grow the
+project-view modal itself the same way RZ-1 does — check this doesn't
+regress even though the script editor has a highlight overlay of its own
+(section 10) sitting on top of the plain textarea case.
+
+### RZ-3 — Long lines soft-wrap instead of requiring horizontal scroll
+Type a paragraph of plain body text long enough to wrap in the task
+description, without manually resizing the box.
+**Pass:** it wraps at the box's current width, matching normal textarea
+behavior — no horizontal scrollbar needed just to read it. This applies to
+every large text field (description, agent prompts, workflow script).
 
 ---
 
-## 9. Wrap-up
+## 10. Detail-view width, Python highlighting (new)
+
+### DV-1 — Task and project-view modals are as wide as the waterfall view
+Open the task modal and the project view (a project's row in the Projects
+list) side by side (one after another).
+**Pass:** both use the same `.modal-xl` sizing as the ADW trace/waterfall
+modal (section on trace, not in this doc) — noticeably wider than a
+`.modal-lg` list modal like Projects/Extensions.
+
+### PY-1 — Workflow scripts are Python-syntax-highlighted; prompts are not
+On an ADW card, click "show script" (a real `.py` file). Separately, click
+"show system prompt" on an agent card.
+**Pass:** the script editor colors keywords (`def`, `import`, `return`, …),
+strings, comments, decorators, and numbers — check a triple-quoted docstring
+spanning multiple lines highlights correctly start-to-finish. The click and
+type into the middle of a highlighted line: **the caret lands exactly where
+it visually should** (color-only highlighting shouldn't need the header
+overlay's synthetic-caret workaround at all). The prompt editor (`.md`
+file) shows **no** color highlighting — plain text only.
+
+---
+
+## 11. Archive (new)
+
+Hamburger → *Archived Tasks* to reach the drawer described below.
+
+### ARC-1 — A column's trash-can button archives, it doesn't delete the column
+Create a column with at least one task in it, click its trash-can icon.
+**Pass:** a `confirm()` dialog appears (see the rules above — let it show,
+don't dismiss it via automation) naming how many tasks will move. Confirm
+it. **Pass:** the column itself is still there, now empty; its task(s) are
+gone from the board.
+
+### ARC-2 — Declining the dialog changes nothing
+Click a column's trash-can icon again, dismiss/cancel the dialog.
+**Pass:** the column and its tasks are unchanged; no request was sent
+(check `read_network_requests`).
+
+### ARC-3 — Archived tasks are visible in their own drawer, not on the board
+Open *Archived Tasks* from the hamburger menu.
+**Pass:** the task(s) archived in ARC-1 appear here, each with a column
+picker and a **restore** button. They do **not** appear as a column on the
+main kanban board, and "Archived" never appears as an option in a task's
+own status dropdown.
+
+### ARC-4 — Restoring a task returns it to a real column
+Pick a target column in the drawer's dropdown for an archived task, click
+**restore**.
+**Pass:** the task disappears from the drawer and reappears on the board in
+the chosen column.
+
+---
+
+## 12. Wrap-up
 
 1. Re-check `read_console_messages` for the whole session — zero uncaught
    errors.

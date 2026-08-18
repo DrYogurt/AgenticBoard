@@ -89,6 +89,7 @@ export type CommandType =
   | 'rename_column'
   | 'delete_column'
   | 'reorder_columns'
+  | 'archive_column_tasks'
   | 'create_project'
   | 'get_project'
   | 'update_project'

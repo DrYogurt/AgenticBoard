@@ -461,6 +461,36 @@ describe('FE: generic project-file editor (workflow scripts, agent prompts)', ()
     expect(putCall!.body.content).toContain('edited');
   });
 
+  it('FE-1b: the script editor is Python-syntax-highlighted; prompt editors are not', async () => {
+    const agents = [{ name: 'coder', purpose: 'writes code', prompt_engineering: { system: 'adws/adw_data/prompt_engineering/coder/system.md', user: 'adws/adw_data/prompt_engineering/coder/user.md' } }];
+    const setup = setupBoard([demoProject()], (stub) => installSssfConfigStub(stub, { agents }));
+    mounted = setup.mounted;
+    setup.stub.on('GET', /^\/api\/v1\/projects\/[^/]+\/file$/, ({ url }) => {
+      const p = url.searchParams.get('path');
+      if (p === 'adws/build_feature.py') return { json: { success: true, data: { path: p, content: 'import os\n\ndef main():\n    # entry point\n    return 0\n', exists: true } } };
+      return { json: { success: true, data: { path: p, content: '', exists: true } } };
+    });
+    await boot(mounted);
+    const doc = await openProjectView(mounted);
+
+    const adwCard = doc.querySelector('.pv-adw-card') as HTMLElement;
+    const scriptToggle = Array.from(adwCard.querySelectorAll('button')).find((b) => b.textContent === 'show script') as HTMLButtonElement;
+    dispatch(scriptToggle, 'click');
+    await flushPromises();
+
+    const highlight = adwCard.querySelector('.pv-file-editor-highlight') as HTMLElement;
+    expect(highlight).toBeTruthy();
+    const keywords = Array.from(highlight.querySelectorAll('.py-keyword')).map((el) => el.textContent);
+    expect(keywords).toEqual(['import', 'def', 'return']);
+    expect(highlight.querySelector('.py-comment')).toBeTruthy();
+
+    const agentCard = doc.querySelector('#pv-agent-roles-list .pv-agent-card') as HTMLElement;
+    const promptToggle = Array.from(agentCard.querySelectorAll('button')).find((b) => b.textContent === 'show system prompt') as HTMLButtonElement;
+    dispatch(promptToggle, 'click');
+    await flushPromises();
+    expect(agentCard.querySelector('.pv-file-editor-highlight')).toBeFalsy();
+  });
+
   it('FE-2: an agent card\'s system/user prompt editors are collapsed until toggled', async () => {
     const agents = [{
       name: 'coder',

@@ -115,6 +115,29 @@ const ProjectView = (() => {
     return input;
   }
 
+  // A resizable box only ever resizes itself — CSS `resize` has no way to
+  // make an ancestor follow along. Without this, widening a script/prompt
+  // editor past the modal's current width just makes .modal-body scroll
+  // horizontally. Grows the modal-card (never shrinks it back — the user
+  // resized on purpose) whenever the box's right edge would otherwise spill
+  // past the card's own edge. No-ops where ResizeObserver doesn't exist
+  // (jsdom), matching how resize:both itself isn't unit-testable.
+  function bindResizeGrowsModal(resizableEl, modalCardEl) {
+    if (typeof ResizeObserver === 'undefined' || !resizableEl || !modalCardEl) return () => {};
+    const EDGE_MARGIN = 24;
+    const ro = new ResizeObserver(() => {
+      const boxRect = resizableEl.getBoundingClientRect();
+      const cardRect = modalCardEl.getBoundingClientRect();
+      const overflow = boxRect.right - (cardRect.right - EDGE_MARGIN);
+      if (overflow > 1) {
+        modalCardEl.style.maxWidth = 'none';
+        modalCardEl.style.width = Math.ceil(cardRect.width + overflow) + 'px';
+      }
+    });
+    ro.observe(resizableEl);
+    return () => ro.disconnect();
+  }
+
   function markDirty() {
     dirty = true;
     const banner = document.getElementById('pv-save-banner');
@@ -140,8 +163,17 @@ const ProjectView = (() => {
   // `getPath` is a function, not a string, so the file this points at always
   // reflects the owning object's *current* value (e.g. adw.path after the
   // user edits it) rather than whatever it was when the card was built.
+  //
+  // `opts.highlight`, if given, is a (code: string) => HTML string function
+  // (e.g. window.PythonHighlight.highlight) — when present, the textarea is
+  // wrapped the same way markdown-editor.js wraps its own (a `<pre>`
+  // highlight layer behind a transparent-text textarea), except there's no
+  // scale()/synthetic-caret complexity to match: syntax color alone doesn't
+  // change character metrics on a monospace font, so the native caret stays
+  // pixel-correct with nothing extra needed.
 
-  function createFileEditor(getPath, label) {
+  function createFileEditor(getPath, label, opts) {
+    opts = opts || {};
     const wrap = document.createElement('div');
     wrap.className = 'pv-file-editor';
 
@@ -155,10 +187,40 @@ const ProjectView = (() => {
     body.className = 'pv-file-editor-body hidden';
     wrap.appendChild(body);
 
-    const ta = document.createElement('textarea');
-    ta.className = 'form-input textarea pv-file-editor-textarea';
-    ta.spellcheck = false;
-    body.appendChild(ta);
+    const highlightFn = opts.highlight;
+    let ta;
+    let pre = null;
+    let resizeTarget;
+
+    if (highlightFn) {
+      const surface = document.createElement('div');
+      surface.className = 'pv-file-editor-surface-wrap';
+      pre = document.createElement('pre');
+      pre.className = 'pv-file-editor-highlight';
+      pre.setAttribute('aria-hidden', 'true');
+      ta = document.createElement('textarea');
+      ta.className = 'pv-file-editor-textarea pv-file-editor-textarea-highlighted';
+      ta.spellcheck = false;
+      surface.appendChild(pre);
+      surface.appendChild(ta);
+      body.appendChild(surface);
+      resizeTarget = surface;
+      ta.addEventListener('scroll', () => {
+        pre.scrollTop = ta.scrollTop;
+        pre.scrollLeft = ta.scrollLeft;
+      });
+    } else {
+      ta = document.createElement('textarea');
+      ta.className = 'form-input textarea pv-file-editor-textarea';
+      ta.spellcheck = false;
+      body.appendChild(ta);
+      resizeTarget = ta;
+    }
+    if (modal) bindResizeGrowsModal(resizeTarget, modal.querySelector('.modal-card'));
+
+    function renderHighlight() {
+      if (pre) pre.innerHTML = highlightFn(ta.value);
+    }
 
     const footer = document.createElement('div');
     footer.className = 'pv-file-editor-footer';
@@ -189,6 +251,7 @@ const ProjectView = (() => {
         const data = await apiCallLocal(`/api/v1/projects/${encodeURIComponent(currentProjectId)}/file?path=${encodeURIComponent(relPath)}`);
         original = data && data.content != null ? data.content : '';
         ta.value = original;
+        renderHighlight();
         statusEl.textContent = data && data.exists === false ? 'file does not exist yet — saving will create it' : '';
       } catch (e) {
         statusEl.textContent = `error: ${(e && e.message) || e}`;
@@ -209,6 +272,7 @@ const ProjectView = (() => {
     });
 
     ta.addEventListener('input', () => {
+      renderHighlight();
       if (statusEl.className.indexOf('pv-err') === -1) {
         statusEl.textContent = ta.value !== original ? 'unsaved changes' : '';
         statusEl.className = 'pv-agent-save-status';
@@ -1139,7 +1203,9 @@ const ProjectView = (() => {
 
     const pathInput = mkTextInput(adw.path, 'e.g. adws/build_feature.py', (v) => { adw.path = v; markDirty(); });
     body.appendChild(mkFormGroup('script path (within project)', pathInput));
-    body.appendChild(createFileEditor(() => adw.path, 'script'));
+    body.appendChild(createFileEditor(() => adw.path, 'script', {
+      highlight: window.PythonHighlight && window.PythonHighlight.highlight
+    }));
 
     // Read-only: which agents this workflow actually runs isn't editable
     // metadata, it's baked into the script's own REQUIRED_AGENTS list —
@@ -1359,7 +1425,7 @@ const ProjectView = (() => {
     const wrapper = document.createElement('div');
     wrapper.innerHTML = `
       <div id="modal-project-view" class="modal-backdrop hidden">
-        <div class="modal-card modal-lg">
+        <div class="modal-card modal-xl">
           <div class="modal-header">
             <h3 id="pv-modal-title">project</h3>
             <button type="button" class="modal-close" data-close="modal-project-view">&times;</button>

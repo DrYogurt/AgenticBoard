@@ -1,5 +1,12 @@
 // AgenticBoard Web UI Client Script — Dr. Yogurt Zen Terminal
 
+// A real board column (see engine.ts's own ARCHIVED_COLUMN_ID) that a
+// column's own trash-can button archives into instead of deleting the
+// column. Deliberately hidden from the main kanban grid, the task-status
+// dropdown, and the manage-columns list — its only UI surface is the
+// "Archived Tasks" drawer (see openArchiveModal).
+const ARCHIVED_COLUMN_ID = 'archived';
+
 const state = {
   board: null,
   tasks: [],
@@ -52,6 +59,7 @@ const dom = {
   modalColumn: document.getElementById('modal-column'),
   modalProjects: document.getElementById('modal-projects'),
   modalExtensions: document.getElementById('modal-extensions'),
+  modalArchived: document.getElementById('modal-archived'),
 
   // Forms
   formTask: document.getElementById('form-task'),
@@ -73,6 +81,7 @@ const dom = {
   projectsContainer: document.getElementById('projects-container'),
   projectSearchInput: document.getElementById('project-search-input'),
   extensionsContainer: document.getElementById('extensions-container'),
+  archivedContainer: document.getElementById('archived-container'),
 
   // Document upload (task modal)
   docUploadBox: document.getElementById('doc-upload-box'),
@@ -361,7 +370,7 @@ let lastRenderedStateHash = '';
 let lastActivityFetchTime = 0;
 
 function isAnyModalOpen() {
-  const modalIds = ['modal-task', 'modal-column', 'modal-projects', 'modal-extensions', 'modal-project-view'];
+  const modalIds = ['modal-task', 'modal-column', 'modal-projects', 'modal-extensions', 'modal-archived', 'modal-project-view'];
   return modalIds.some((id) => {
     const el = document.getElementById(id);
     return el && !el.classList.contains('hidden');
@@ -878,14 +887,14 @@ function renderKanbanColumns() {
   const taskMap = new Map(state.tasks.map((t) => [t.id, t]));
 
   dom.taskStatusInput.innerHTML = '';
-  state.board.columns.forEach((c) => {
+  state.board.columns.filter((c) => c.id !== ARCHIVED_COLUMN_ID).forEach((c) => {
     const opt = document.createElement('option');
     opt.value = c.id;
     opt.textContent = c.name;
     dom.taskStatusInput.appendChild(opt);
   });
 
-  state.board.columns.forEach((column) => {
+  state.board.columns.filter((column) => column.id !== ARCHIVED_COLUMN_ID).forEach((column) => {
     const colEl = document.createElement('div');
     colEl.className = 'kanban-column';
     colEl.dataset.columnId = column.id;
@@ -922,7 +931,7 @@ function renderKanbanColumns() {
           <span class="column-badge">${columnTasks.length}</span>
         </div>
         <div class="column-actions">
-          <button class="icon-btn btn-delete-col" title="Delete Column" data-col-id="${column.id}">
+          <button class="icon-btn btn-delete-col" title="Archive all tasks in this column" data-col-id="${column.id}">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"></polyline>
               <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -947,8 +956,10 @@ function renderKanbanColumns() {
     const btnDel = colEl.querySelector('.btn-delete-col');
     btnDel.addEventListener('click', async (e) => {
       e.stopPropagation();
-      if (confirm(`Delete column "${column.name}"?`)) {
-        await apiCall(`/api/v1/columns/${column.id}`, 'DELETE');
+      const count = columnTasks.length;
+      const what = count === 1 ? '1 task' : `${count} tasks`;
+      if (confirm(`Archive ${what} in "${column.name}"? The column stays — its tasks move to Archived Tasks and can be restored from there.`)) {
+        await apiCall(`/api/v1/columns/${column.id}/archive`, 'POST');
         fetchBoardState();
       }
     });
@@ -1195,6 +1206,31 @@ function clearTaskFormError() {
 }
 
 // --- Modals Controller ---
+// A resizable box (textarea, .mde-wrap) only ever resizes itself — CSS
+// `resize` has no way to make an ancestor follow along. Without this, widening
+// one past its modal's current width just makes .modal-body scroll
+// horizontally, leaving the box detached from the rest of the form. Grows the
+// modal-card (never shrinks it back — the user resized on purpose) whenever
+// the box's right edge would otherwise spill past the card's own edge.
+// ResizeObserver doesn't exist in jsdom, so this silently no-ops in tests —
+// consistent with how the resize:both behavior itself isn't unit-testable
+// (see BROWSER_TESTS.md's RZ-* notes).
+function bindResizeGrowsModal(resizableEl, modalCardEl) {
+  if (typeof ResizeObserver === 'undefined' || !resizableEl || !modalCardEl) return () => {};
+  const EDGE_MARGIN = 24;
+  const ro = new ResizeObserver(() => {
+    const boxRect = resizableEl.getBoundingClientRect();
+    const cardRect = modalCardEl.getBoundingClientRect();
+    const overflow = boxRect.right - (cardRect.right - EDGE_MARGIN);
+    if (overflow > 1) {
+      modalCardEl.style.maxWidth = 'none';
+      modalCardEl.style.width = Math.ceil(cardRect.width + overflow) + 'px';
+    }
+  });
+  ro.observe(resizableEl);
+  return () => ro.disconnect();
+}
+
 function openTaskModal(task = null) {
   clearTaskFormError();
   updateProjectSelects();
@@ -1236,9 +1272,13 @@ function openTaskModal(task = null) {
   setDocUploadStatus('');
   refreshDocList();
   if (window.MarkdownEditor) {
-    window.MarkdownEditor.attach(dom.taskDescInput);
+    const mdHandle = window.MarkdownEditor.attach(dom.taskDescInput);
     // .value was assigned programmatically above, which fires no input event.
     window.MarkdownEditor.refresh(dom.taskDescInput);
+    if (mdHandle && mdHandle.wrapper && !mdHandle.wrapper.__growBound) {
+      mdHandle.wrapper.__growBound = true;
+      bindResizeGrowsModal(mdHandle.wrapper, dom.modalTask.querySelector('.modal-card'));
+    }
   }
 
   dom.modalTask.classList.remove('hidden');
@@ -1258,6 +1298,60 @@ function openProjectsModal() {
 function openExtensionsModal() {
   renderExtensionsList();
   dom.modalExtensions.classList.remove('hidden');
+}
+
+function openArchiveModal() {
+  renderArchivedList();
+  dom.modalArchived.classList.remove('hidden');
+}
+
+function renderArchivedList() {
+  dom.archivedContainer.innerHTML = '';
+  const archived = state.tasks.filter((t) => t.status === ARCHIVED_COLUMN_ID);
+  if (archived.length === 0) {
+    dom.archivedContainer.innerHTML = '<p style="color: var(--text-dim);">No archived tasks.</p>';
+    return;
+  }
+  const restoreTargets = (state.board.columns || []).filter((c) => c.id !== ARCHIVED_COLUMN_ID);
+  archived
+    .slice()
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+    .forEach((task) => {
+      const div = document.createElement('div');
+      div.className = 'item-card-row';
+      const projectLabel = task.project ? `[${escapeHTML(task.project)}] ` : '';
+      const archivedAt = task.updated_at ? new Date(task.updated_at).toLocaleString() : '';
+      div.innerHTML = `
+        <div>
+          <strong>${escapeHTML(task.name || task.title || task.id)}</strong>
+          <div style="font-size: 0.75rem; color: var(--text-muted);">${projectLabel}archived ${escapeHTML(archivedAt)}</div>
+        </div>
+        <div class="archived-restore-group">
+          <select class="form-input archived-restore-select"></select>
+          <button type="button" class="btn btn-secondary" style="padding: 2px 8px; font-size: 0.75rem;">restore</button>
+        </div>
+      `;
+      const select = div.querySelector('.archived-restore-select');
+      restoreTargets.forEach((c) => {
+        const opt = document.createElement('option');
+        opt.value = c.id;
+        opt.textContent = c.name;
+        select.appendChild(opt);
+      });
+      const restoreBtn = div.querySelector('button');
+      restoreBtn.addEventListener('click', async () => {
+        restoreBtn.disabled = true;
+        try {
+          await apiCall('/api/v1/command', 'POST', { type: 'move_task', payload: { id: task.id, target_status: select.value } });
+          await fetchBoardState();
+          renderArchivedList();
+        } catch (e) {
+          restoreBtn.disabled = false;
+          alert(`Failed to restore: ${(e && e.message) || e}`);
+        }
+      });
+      dom.archivedContainer.appendChild(div);
+    });
 }
 
 function renderExtensionsList() {
@@ -1431,6 +1525,10 @@ function setupEventListeners() {
   document.getElementById('btn-extensions').addEventListener('click', () => {
     dom.hamburgerDropdown.classList.add('hidden');
     openExtensionsModal();
+  });
+  document.getElementById('btn-archived-tasks').addEventListener('click', () => {
+    dom.hamburgerDropdown.classList.add('hidden');
+    openArchiveModal();
   });
   document.getElementById('btn-add-column').addEventListener('click', () => {
     dom.hamburgerDropdown.classList.add('hidden');

@@ -27,6 +27,7 @@ const MUTATION_COMMANDS = new Set([
   'rename_column',
   'delete_column',
   'reorder_columns',
+  'archive_column_tasks',
   'create_project',
   'update_project',
   'delete_project',
@@ -41,6 +42,13 @@ const MUTATION_COMMANDS = new Set([
  *  generous enough that a project with heavy direct-SSSF usage won't miss
  *  older still-relevant rows, cheap enough to run every few seconds. */
 const SYNC_SESSION_SCAN_LIMIT = 500;
+
+/** A real board column (satisfies the same referential-integrity invariants
+ *  as any other — every task must belong to exactly one column with a
+ *  matching status), auto-created on first use and deliberately never shown
+ *  on the main kanban grid or offered as a manual move target — see
+ *  app.js's own ARCHIVED_COLUMN_ID filtering. */
+const ARCHIVED_COLUMN_ID = 'archived';
 
 export class DeterministicEngine extends EventEmitter {
   private storage: WorkspaceStorage;
@@ -172,6 +180,8 @@ export class DeterministicEngine extends EventEmitter {
         return await this.handleDeleteColumn(command.payload);
       case 'reorder_columns':
         return await this.handleReorderColumns(command.payload);
+      case 'archive_column_tasks':
+        return await this.handleArchiveColumnTasks(command.payload);
 
       case 'create_project':
         return await this.handleCreateProject(command.payload);
@@ -804,6 +814,38 @@ export class DeterministicEngine extends EventEmitter {
     await this.storage.writeBoard(board);
     await this.validateStateInvariants();
     return board;
+  }
+
+  /** The column's own delete button no longer deletes the column — it
+   *  archives everything in it instead (see app.js's confirm() dialog).
+   *  Reuses handleMoveTask per task (not a bulk task_order splice) so every
+   *  existing single-task invariant/side-effect stays correct without
+   *  duplicating that logic; auto-creates the (hidden, never-deleted)
+   *  Archived column on first use so this works on workspaces that
+   *  predate this feature with no migration step. */
+  private async handleArchiveColumnTasks(payload: { column_id: string }): Promise<{ archived: string[] }> {
+    if (!payload.column_id) throw new Error('column_id is required');
+    if (payload.column_id === ARCHIVED_COLUMN_ID) {
+      throw new Error('The Archived column cannot archive itself');
+    }
+
+    const board = await this.storage.readBoard();
+    if (!board.columns.some((c) => c.id === payload.column_id)) {
+      throw new Error(`Column '${payload.column_id}' does not exist on board`);
+    }
+    if (!board.columns.some((c) => c.id === ARCHIVED_COLUMN_ID)) {
+      board.columns.push({ id: ARCHIVED_COLUMN_ID, name: 'Archived' });
+      await this.storage.writeBoard(board);
+    }
+
+    const tasks = await this.storage.listTasks();
+    const toArchive = tasks.filter((t) => t.status === payload.column_id);
+    const archivedIds: string[] = [];
+    for (const task of toArchive) {
+      const moved = await this.handleMoveTask({ id: task.id, target_status: ARCHIVED_COLUMN_ID });
+      archivedIds.push(moved.id);
+    }
+    return { archived: archivedIds };
   }
 
   private async handleReorderColumns(payload: { column_ids: string[] }): Promise<Board> {

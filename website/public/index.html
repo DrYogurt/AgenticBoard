@@ -23,6 +23,7 @@
   <link rel="stylesheet" href="markdown-editor.css">
   <link rel="stylesheet" href="project-view.css">
   <link rel="stylesheet" href="workflow-diagram.css">
+  <link rel="stylesheet" href="python-highlight.css">
 </head>
 
 <body>
@@ -114,6 +115,14 @@
             </svg>
             Extensions
           </button>
+          <button id="btn-archived-tasks" class="dropdown-item">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="21 8 21 21 3 21 3 8" />
+              <rect x="1" y="3" width="22" height="5" />
+              <line x1="10" y1="12" x2="14" y2="12" />
+            </svg>
+            Archived Tasks
+          </button>
           <button id="btn-add-column" class="dropdown-item">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19" />
@@ -200,7 +209,7 @@
 
     <!-- Modal 1: Task Editor -->
     <div id="modal-task" class="modal-backdrop hidden">
-      <div class="modal-card">
+      <div class="modal-card modal-xl">
         <div class="modal-header">
           <h3 id="task-modal-title">task details</h3>
           <button class="modal-close" data-close="modal-task">&times;</button>
@@ -354,6 +363,19 @@
       </div>
     </div>
 
+    <!-- Modal: Archived Tasks -->
+    <div id="modal-archived" class="modal-backdrop hidden">
+      <div class="modal-card modal-lg">
+        <div class="modal-header">
+          <h3>archived tasks</h3>
+          <button class="modal-close" data-close="modal-archived">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="archived-list" id="archived-container"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- Modal 5: Full ADW Trace (gantt waterfall + phase detail) -->
     <div id="modal-trace" class="modal-backdrop hidden">
       <div class="modal-card modal-xl">
@@ -382,6 +404,7 @@
 
   <script src="trace.js"></script>
   <script src="markdown-editor.js"></script>
+  <script src="python-highlight.js"></script>
   <script src="workflow-diagram.js"></script>
   <script src="project-view.js"></script>
   <script src="app.js"></script>

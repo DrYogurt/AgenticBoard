@@ -1,0 +1,29 @@
+/* ── Python syntax highlighting (workflow script editor) ─────────────────
+   Color only, deliberately — no font-weight/style/size changes. Even a
+   "monospace" font's bold or italic variant isn't guaranteed to share the
+   regular variant's exact character-advance width, and there's no browser
+   available in this environment to verify it either way. Pure color keeps
+   the native textarea caret in project-view.js's createFileEditor
+   pixel-correct with zero risk, unlike markdown-editor.css's scaled
+   headers (which needed a synthetic caret specifically to work around
+   this same class of problem). */
+
+.py-keyword {
+  color: var(--accent-blue);
+}
+
+.py-string {
+  color: var(--accent-green);
+}
+
+.py-comment {
+  color: var(--text-dim);
+}
+
+.py-number {
+  color: var(--accent-yellow);
+}
+
+.py-decorator {
+  color: var(--accent-violet);
+}
